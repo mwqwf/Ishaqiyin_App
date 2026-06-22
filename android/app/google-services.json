@@ -1,0 +1,48 @@
+{
+  "project_info": {
+    "project_number": "502388954405",
+    "project_id": "mxqp-8d1e8",
+    "storage_bucket": "mxqp-8d1e8.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:502388954405:android:6ca4f526675c8c3a89b6cc",
+        "android_client_info": {
+          "package_name": "com.ali.menbarishaqeen"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCWAHqbzhfQ-ZcjSSVCAhFFqCTgQ66SdCs"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:502388954405:android:31fddd0e0de3b3bd89b6cc",
+        "android_client_info": {
+          "package_name": "com.yourcompany.islamicaudiolessons"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCWAHqbzhfQ-ZcjSSVCAhFFqCTgQ66SdCs"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+} 
