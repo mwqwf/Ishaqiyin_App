@@ -1,13 +1,18 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../services/auto_download_service.dart';
 import '../services/download_service.dart';
 import '../services/firebase_repo.dart';
+import '../services/local_store.dart';
+import '../services/notification_service.dart';
 import '../state/app_state.dart';
 import '../theme.dart';
+import 'downloads_screen.dart';
+import 'favorites_screen.dart';
+import 'history_screen.dart';
+import 'playlists_screen.dart';
 
-/// Settings presented as a slide-up sheet (opened from the Home ⋮ menu),
-/// keeping all features except the removed social channels.
 Future<void> showSettingsSheet(BuildContext context) {
   return showModalBottomSheet(
     context: context,
@@ -66,12 +71,18 @@ class _SettingsSheetState extends State<_SettingsSheet> {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
   }
 
+  void _nav(Widget screen) {
+    Navigator.pop(context);
+    Navigator.push(context, MaterialPageRoute(builder: (_) => screen));
+  }
+
   @override
   Widget build(BuildContext context) {
     final state = context.watch<AppState>();
     final pct = (state.fontScale * 100).round();
+    final streak = LocalStore.getStreakDays();
     return SafeArea(
-      child: Padding(
+      child: SingleChildScrollView(
         padding: const EdgeInsets.fromLTRB(16, 4, 16, 16),
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -81,7 +92,45 @@ class _SettingsSheetState extends State<_SettingsSheet> {
               child: Text('الإعدادات',
                   style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
             ),
+            if (streak > 0) ...[
+              const SizedBox(height: 8),
+              Center(
+                child: Chip(
+                  avatar: const Icon(Icons.local_fire_department, color: kOrange),
+                  label: Text('سلسلة استماع: $streak ${streak == 1 ? 'يوم' : 'أيام'}'),
+                ),
+              ),
+            ],
             const SizedBox(height: 14),
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: const Icon(Icons.download_done, color: kGreen),
+              title: const Text('تنزيلاتي'),
+              trailing: const Icon(Icons.chevron_left),
+              onTap: () => _nav(const DownloadsScreen()),
+            ),
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: const Icon(Icons.favorite, color: Colors.red),
+              title: const Text('المفضّلة'),
+              trailing: const Icon(Icons.chevron_left),
+              onTap: () => _nav(const FavoritesScreen()),
+            ),
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: const Icon(Icons.queue_music, color: kTeal),
+              title: const Text('قوائم التشغيل'),
+              trailing: const Icon(Icons.chevron_left),
+              onTap: () => _nav(const PlaylistsScreen()),
+            ),
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: const Icon(Icons.history, color: kBlue),
+              title: const Text('السجل'),
+              trailing: const Icon(Icons.chevron_left),
+              onTap: () => _nav(const HistoryScreen()),
+            ),
+            const Divider(height: 24),
             const Text('حجم الخط',
                 style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
             Row(
@@ -109,6 +158,60 @@ class _SettingsSheetState extends State<_SettingsSheet> {
               value: state.themeMode == ThemeMode.dark,
               onChanged: (v) => state.setDark(v),
             ),
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('تذكير «تابع الاستماع»'),
+              subtitle: const Text('إشعار محلي بلطف'),
+              secondary: const Icon(Icons.notifications_outlined, color: kTeal),
+              value: LocalStore.getContinueReminderEnabled(),
+              onChanged: (v) async {
+                await LocalStore.setContinueReminderEnabled(v);
+                if (v) await NotificationService.requestPermission();
+                setState(() {});
+              },
+            ),
+            const Divider(height: 24),
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('التنزيل التلقائي'),
+              subtitle: Text(state.autoDownloadEnabled
+                  ? 'الهدف: ${_targetLabel(state.autoDownloadTarget)}'
+                  : 'معطّل'),
+              secondary: const Icon(Icons.sync, color: kTeal),
+              value: state.autoDownloadEnabled,
+              onChanged: (v) async {
+                await state.setAutoDownloadEnabled(v);
+                if (v) {
+                  await state.setAutoDownloadTarget('recent');
+                  AutoDownloadService.runIfEnabled();
+                }
+              },
+            ),
+            if (state.autoDownloadEnabled) ...[
+              Padding(
+                padding: const EdgeInsets.only(right: 8),
+                child: SegmentedButton<String>(
+                  segments: const [
+                    ButtonSegment(value: 'recent', label: Text('الأحدث')),
+                    ButtonSegment(value: 'main', label: Text('المقترح')),
+                  ],
+                  selected: {state.autoDownloadTarget ?? 'recent'},
+                  onSelectionChanged: (s) async {
+                    await state.setAutoDownloadTarget(s.first);
+                    AutoDownloadService.runIfEnabled();
+                  },
+                ),
+              ),
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                title: const Text('Wi‑Fi فقط'),
+                value: LocalStore.getAutoDownloadWifiOnly(),
+                onChanged: (v) async {
+                  await LocalStore.setAutoDownloadWifiOnly(v);
+                  setState(() {});
+                },
+              ),
+            ],
             const Divider(height: 24),
             ListTile(
               contentPadding: EdgeInsets.zero,
@@ -128,12 +231,21 @@ class _SettingsSheetState extends State<_SettingsSheet> {
             ),
             const SizedBox(height: 16),
             const Center(
-              child:
-                  Text('تطبيق الإسحاقيين', style: TextStyle(color: Colors.grey)),
+              child: Text('منبر ادكصهك — دروس صوتية',
+                  style: TextStyle(color: Colors.grey)),
             ),
           ],
         ),
       ),
     );
+  }
+
+  String _targetLabel(String? t) {
+    switch (t) {
+      case 'main':
+        return 'المقترح لك';
+      default:
+        return 'الأحدث';
+    }
   }
 }

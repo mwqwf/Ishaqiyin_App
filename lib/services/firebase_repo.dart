@@ -2,15 +2,15 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import '../models.dart';
 import 'local_store.dart';
 
-/// Read-only data access to Firestore (project mxqp-8d1e8), with a local
-/// cache fallback so the app works offline after the first online load.
-///
-/// NOTE: This app never writes to Firestore. All content management lives
-/// in a separate (future) admin app behind real authentication.
+/// Read-only Firestore access with local cache and incremental sync.
 class FirebaseRepo {
   static final FirebaseFirestore _db = FirebaseFirestore.instance;
 
-  static Future<List<Category>> fetchCategories() async {
+  /// Minimum interval between full re-fetches (30 minutes).
+  static const _syncIntervalMs = 30 * 60 * 1000;
+
+  static Future<List<Category>> fetchCategories({bool force = false}) async {
+    if (!force && _cacheFresh()) return LocalStore.getCategories();
     try {
       final snap = await _db.collection('categories').get();
       final list =
@@ -22,7 +22,8 @@ class FirebaseRepo {
     }
   }
 
-  static Future<List<Subcategory>> fetchSubcategories() async {
+  static Future<List<Subcategory>> fetchSubcategories({bool force = false}) async {
+    if (!force && _cacheFresh()) return LocalStore.getSubcategories();
     try {
       final snap = await _db.collection('subcategories').get();
       final list =
@@ -34,40 +35,45 @@ class FirebaseRepo {
     }
   }
 
-  static Future<List<Lesson>> fetchAllLessons() async {
+  static bool _cacheFresh() {
+    final last = LocalStore.getLastSyncMs();
+    if (last == 0) return false;
+    return DateTime.now().millisecondsSinceEpoch - last < _syncIntervalMs;
+  }
+
+  static Future<List<Lesson>> fetchAllLessons({bool force = false}) async {
+    if (!force && _cacheFresh()) {
+      return _mergeLocalDurations(LocalStore.getLessons());
+    }
     try {
       final snap = await _db.collection('lessons').get();
       final list =
           snap.docs.map((d) => Lesson.fromMap(d.id, d.data())).toList();
       await LocalStore.setLessons(list);
-      return list;
+      await LocalStore.setLastSyncMs(DateTime.now().millisecondsSinceEpoch);
+      return _mergeLocalDurations(list);
     } catch (_) {
-      return LocalStore.getLessons();
+      return _mergeLocalDurations(LocalStore.getLessons());
     }
   }
 
-  static Future<List<Book>> fetchBooks() async {
-    try {
-      final snap = await _db.collection('books').get();
-      final list = snap.docs.map((d) => Book.fromMap(d.id, d.data())).toList();
-      list.sort((a, b) => b.createdAt.compareTo(a.createdAt));
-      await LocalStore.setBooks(list);
-      return list;
-    } catch (_) {
-      final cached = LocalStore.getBooks();
-      cached.sort((a, b) => b.createdAt.compareTo(a.createdAt));
-      return cached;
-    }
+  static List<Lesson> _mergeLocalDurations(List<Lesson> lessons) {
+    final durations = LocalStore.getDurations();
+    return lessons.map((l) {
+      final local = durations[l.id];
+      if (local != null && local > 0 && l.durationMs <= 0) {
+        return l.copyWith(durationMs: local);
+      }
+      return l;
+    }).toList();
   }
 
-  /// Latest lessons first.
   static Future<List<Lesson>> fetchRecentLessons({int limit = 50}) async {
     final all = await fetchAllLessons();
     all.sort((a, b) => b.createdAt.compareTo(a.createdAt));
     return all.take(limit).toList();
   }
 
-  /// Lessons for a subcategory, oldest first (matches original ordering).
   static List<Lesson> lessonsForSubcategory(String subId, List<Lesson> all) {
     final s = subId.trim();
     final list = all.where((l) => l.subcategoryId == s).toList();
@@ -83,11 +89,6 @@ class FirebaseRepo {
     return list;
   }
 
-  /// Anonymous, aggregate play counter. Increments the lesson's `views`
-  /// field by exactly 1. Requires Firestore rules that allow an
-  /// increment-only update to `views` (see deployment notes). This is the
-  /// ONLY write the app performs; it carries no device id or personal data.
-  /// Fails silently when offline or not yet permitted by the rules.
   static Future<void> incrementViews(String lessonId) async {
     if (lessonId.isEmpty) return;
     try {
@@ -95,30 +96,22 @@ class FirebaseRepo {
           .collection('lessons')
           .doc(lessonId)
           .set({'views': FieldValue.increment(1)}, SetOptions(merge: true));
-    } catch (_) {
-      // Best-effort: popularity must never break playback or the UI.
-    }
+    } catch (_) {}
   }
 
-  /// Most-listened first (by global `views`). Falls back to newest-first
-  /// when no view data exists yet (e.g. before the rules are deployed),
-  /// so the row is always meaningful.
+  static bool hasViewData(List<Lesson> all) =>
+      all.any((l) => l.views > 0);
+
   static List<Lesson> mostListened(List<Lesson> all, {int limit = 20}) {
     final list = all.where((l) => l.audioUrl.isNotEmpty).toList();
-    final anyViews = list.any((l) => l.views > 0);
+    if (!hasViewData(list)) return [];
     list.sort((a, b) {
-      if (anyViews) {
-        final c = b.views.compareTo(a.views);
-        if (c != 0) return c;
-      }
-      return b.createdAt.compareTo(a.createdAt);
+      final c = b.views.compareTo(a.views);
+      return c != 0 ? c : b.createdAt.compareTo(a.createdAt);
     });
     return list.take(limit).toList();
   }
 
-  /// Audio similar to [lesson]: same subcategory first, then same category,
-  /// then the rest — so suggestions span both inside and outside the
-  /// section. Excludes the lesson itself.
   static List<Lesson> similarTo(Lesson lesson, List<Lesson> all,
       {int limit = 20}) {
     final pool =
@@ -144,7 +137,6 @@ class FirebaseRepo {
     return pool.take(limit).toList();
   }
 
-  /// Lessons the user started but didn't finish, most recent first.
   static List<Lesson> continueListening(List<Lesson> all) {
     final positions = LocalStore.getPositions();
     final completed = LocalStore.getCompletedIds().toSet();
@@ -159,10 +151,6 @@ class FirebaseRepo {
     return res;
   }
 
-  /// Personalized Home feed, ranked by the sections and audio the user
-  /// actually uses (all computed on-device). For a brand-new user with no
-  /// history it falls back to most-listened, so the first launch still
-  /// surfaces the most popular audio.
   static List<Lesson> recommendedFeed(List<Lesson> all, {int limit = 60}) {
     final withAudio = all.where((l) => l.audioUrl.isNotEmpty).toList();
     final subVisits = LocalStore.getSubcategoryVisits();
@@ -173,16 +161,18 @@ class FirebaseRepo {
     final hasSignal =
         subVisits.isNotEmpty || catVisits.isNotEmpty || playCounts.isNotEmpty;
     if (!hasSignal) {
-      return mostListened(withAudio, limit: limit);
+      final newest = [...withAudio]
+        ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+      return newest.take(limit).toList();
     }
 
     double score(Lesson l) {
       var s = 0.0;
       s += (subVisits[l.subcategoryId] ?? 0) * 3.0;
       s += (catVisits[l.categoryId] ?? 0) * 1.5;
-      s += l.views * 0.05; // gentle nudge from global popularity
-      if ((playCounts[l.id] ?? 0) > 0) s -= 2.0; // already heard
-      if (completed.contains(l.id)) s -= 4.0; // finished
+      s += l.views * 0.05;
+      if ((playCounts[l.id] ?? 0) > 0) s -= 2.0;
+      if (completed.contains(l.id)) s -= 4.0;
       return s;
     }
 
@@ -194,13 +184,48 @@ class FirebaseRepo {
     return list.take(limit).toList();
   }
 
-  /// One-shot sync used at startup to warm the cache.
-  static Future<void> syncAll() async {
+  /// Lessons in subcategories the user visited but hasn't completed all of.
+  static List<Lesson> continueSection(List<Lesson> all, {int limit = 15}) {
+    final subVisits = LocalStore.getSubcategoryVisits();
+    if (subVisits.isEmpty) return [];
+    final completed = LocalStore.getCompletedIds().toSet();
+    final positions = LocalStore.getPositions();
+    final sortedSubs = subVisits.entries.toList()
+      ..sort((a, b) => b.value.compareTo(a.value));
+    final res = <Lesson>[];
+    for (final entry in sortedSubs) {
+      final subLessons = lessonsForSubcategory(entry.key, all);
+      for (final l in subLessons) {
+        if (completed.contains(l.id)) continue;
+        if ((positions[l.id] ?? 0) > 0 || subVisits.containsKey(l.subcategoryId)) {
+          res.add(l);
+          if (res.length >= limit) return res;
+        }
+      }
+    }
+    return res;
+  }
+
+  /// One random subcategory's lessons for daily discovery.
+  static List<Lesson> randomSectionToday(List<Lesson> all, {int limit = 12}) {
+    final subs = LocalStore.getSubcategories();
+    if (subs.isEmpty) return [];
+    final day = DateTime.now().day + DateTime.now().month * 31;
+    final sub = subs[day % subs.length];
+    return lessonsForSubcategory(sub.id, all).take(limit).toList();
+  }
+
+  static List<Lesson> favorites(List<Lesson> all) {
+    final ids = LocalStore.getFavoriteIds().toSet();
+    final byId = {for (final l in all) l.id: l};
+    return ids.map((id) => byId[id]).whereType<Lesson>().toList();
+  }
+
+  static Future<void> syncAll({bool force = false}) async {
     await Future.wait([
-      fetchCategories(),
-      fetchSubcategories(),
-      fetchAllLessons(),
-      fetchBooks(),
+      fetchCategories(force: force),
+      fetchSubcategories(force: force),
+      fetchAllLessons(force: force),
     ]);
   }
 }

@@ -2,11 +2,14 @@ import 'package:firebase_core/firebase_core.dart' show FirebaseOptions;
 import 'package:flutter/foundation.dart'
     show defaultTargetPlatform, kIsWeb, TargetPlatform;
 
-/// Firebase configuration for the Ishaqiyin app.
+/// Firebase configuration (read-only consumer access).
 ///
-/// Values mirror the original project's `google-services.json`
-/// (Firebase project: mxqp-8d1e8). The Android client package that
-/// matches `appId` below is `com.ali.menbarishaqeen`.
+/// Values come from the Firebase project `mxqp-8d1e8`. Firebase is
+/// initialized from these options directly (no `google-services.json`
+/// processing at build time), so Firestore reads work regardless of the
+/// app's `applicationId`. The `appId` below is registered to an existing
+/// Android client in that project; the new `applicationId`
+/// (`com.ali.menbaradkshk`) does not need to match it for read access.
 class DefaultFirebaseOptions {
   static FirebaseOptions get currentPlatform {
     if (kIsWeb) {

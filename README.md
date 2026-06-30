@@ -1,49 +1,36 @@
-# تطبيق الإسحاقيين — Ishaqiyin App (Flutter)
+# منبر ادكصهك (Flutter)
 
-تطبيق صوتي معرفي: أقسام ← أقسام فرعية ← دروس صوتية، مع مكتبة كتب PDF،
-بحث، تشغيل في الخلفية، تنزيل للاستماع دون إنترنت، ووضع ليلي.
-
-هذه نسخة **Flutter** نظيفة وآمنة، محوّلة عن التطبيق الأصلي الذي كان مبنياً
-على Expo / React Native (مجلد `Islamique2`).
+تطبيق **صوتي** معرفي: أقسام ← أقسام فرعية ← دروس صوتية، مع بحث عربي ذكي،
+تشغيل في الخلفية، مشغّل مصغّر، تنزيل للاستماع دون إنترنت، مفضّلة، ووضع ليلي.
 
 ---
 
-## ما الذي تغيّر في التحويل
+## الميزات الرئيسية
 
-### حُذف نهائياً
-- **لوحة التحكم المخفية** (كانت تُفتح بـ5 نقرات على التبويب الرئيسي):
-  لم تُنقل إطلاقاً. لا يوجد أي مسار إداري داخل تطبيق المستخدم.
-  الإدارة ستكون في **تطبيق منفصل** لاحقاً، خلف مصادقة حقيقية.
-- **تتبّع الأجهزة**: التطبيق الأصلي كان يولّد معرّف جهاز ويرسله إلى Firestore
-  (مجموعة `devices`) دون موافقة. **أُزيل** هذا السلوك بالكامل (خصوصية + توافق Play).
-- جميع دوال الكتابة/الحذف على Firestore وStorage: غير موجودة. التطبيق **قراءة فقط**.
-
-### صلاحيات نظيفة (Android)
-يُطلب فقط ما يلزم فعلاً:
-`INTERNET`, `ACCESS_NETWORK_STATE`, `WAKE_LOCK`,
-`FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_MEDIA_PLAYBACK`, `POST_NOTIFICATIONS`.
-
-أُزيلت الصلاحيات الحسّاسة غير المستخدمة التي كانت في النسخة القديمة:
-الميكروفون `RECORD_AUDIO`، التخزين الخارجي، `ACCESS_MEDIA_LOCATION`،
-`USE_EXACT_ALARM`، `RECEIVE_BOOT_COMPLETED`، `SYSTEM_ALERT_WINDOW`.
+- **مشغّل صوت متكامل**: سرعة 0.75×–2×، قفز ±15 ثانية، مؤقّت نوم، مشغّل مصغّر ثابت
+- **بحث عربي**: تطبيع الهمزات والتشكيل، سجلّ بحث، بحث في العناوين والأقسام والشيوخ
+- **تنزيلاتي**: قائمة بكل ما نزّلته مع إمكانية الحذف
+- **مفضّلة** ♥ و**تابع الاستماع** مع شريط تقدّم
+- **مشاركة كرابط** `menbar.app/lesson/<id>` بدل ملف خام
+- **تنزيل تلقائي** (Wi‑Fi فقط، أحدث أو مقترح)
+- **سلسلة استماع يومية** وإشعار «تابع الاستماع»
+- **خصوصية**: كل التخصيص على الجهاز فقط؛ عدّاد `views` مجهول
 
 ---
 
 ## البنية
 ```
 lib/
-  main.dart                  تهيئة Firebase + الصوت بالخلفية + RTL + الثيم
-  firebase_options.dart      إعداد مشروع mxqp-8d1e8 (قراءة فقط)
-  models.dart                Category / Subcategory / Lesson / Book
-  theme.dart                 ألوان + خط Amiri + فاتح/داكن
-  state/app_state.dart       الثيم + حجم الخط
-  services/
-    local_store.dart         كاش وإعدادات (SharedPreferences)
-    firebase_repo.dart       قراءة Firestore + كاش احتياطي offline
-    download_service.dart     تنزيل الصوت/الكتب (dio) في تخزين التطبيق الخاص
-    audio_controller.dart     محرك تشغيل واحد (just_audio) + التالي/السابق + autoplay
-  widgets/audio_item.dart    صف الدرس: تشغيل/تحميل/مشاركة + شريط تقدّم
-  screens/                   الرئيسية، الأقسام الفرعية، الدروس، الأحدث، الكتب، الإعدادات، عارض PDF
+  main.dart
+  models.dart
+  theme.dart
+  state/app_state.dart
+  utils/           arabic_search, lesson_display, category_colors
+  services/        firebase_repo, content_repository, audio_controller,
+                   download_service, auto_download, notifications, deep_links
+  widgets/         audio_item, mini_player, skeleton_loader
+  screens/         home, player, lessons, subcategories, settings,
+                   downloads, favorites, search_delegate
 ```
 
 ## التشغيل
@@ -51,14 +38,6 @@ lib/
 
 ---
 
-## تنبيهات أمنية مهمة (من التطبيق القديم — تحتاج إجراءً منك)
-1. **قاعدة Firestore/Storage مفتوحة**: ما دامت القواعد تسمح بالكتابة للعموم،
-   يبقى الخطر قائماً حتى مع هذا التطبيق. أقفِل القواعد بحيث تكون القراءة عامة
-   والكتابة للمشرف الموثّق فقط.
-2. **مفاتيح التوقيع المسرّبة**: ملف `credentials.json` القديم في `Islamique2`
-   كان يحوي كلمة مرور keystore الإصدار نصاً صريحاً داخل git.
-   **بدّل/دوّر هذا الـ keystore** ولا تستخدمه لتوقيع النسخة الجديدة.
-3. التطبيق الجديد لا يحتوي أي أسرار توقيع؛ ولّد keystore جديداً عند أول رفع.
-
-> ملاحظة: مجلد `Islamique2` القديم لم يُحذف — احتفظ به كمرجع حتى تتأكد من عمل
-> هذه النسخة، ثم يمكنك حذفه.
+## تنبيهات أمنية
+1. **قواعد Firestore**: اقرأ COMPLIANCE_AND_RULES.md — انشر قاعدة زيادة `views`.
+2. **Deep Links**: يتطلب ملف `assetlinks.json` على `menbar.app` للتحقق التلقائي.

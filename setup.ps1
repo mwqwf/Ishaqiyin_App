@@ -41,7 +41,7 @@ flutter --version
 
 # 2) Generate the Android platform scaffold (skips existing lib/pubspec) ----
 Write-Host "Generating Android scaffold..." -ForegroundColor Cyan
-flutter create --platforms=android --org com.ali --project-name ishaqiyin_app .
+flutter create --platforms=android --org com.ali --project-name menbaradkshk .
 
 # 3) Apply the clean AndroidManifest (overwrites the generated one) ----
 $manifestSrc = Join-Path $proj "_overrides\AndroidManifest.xml"
@@ -65,7 +65,7 @@ if (Test-Path $gradleKts) {
 }
 
 # 4) Remove the stray placeholder package folder if it is empty -------
-$stray = Join-Path $proj "android\app\src\main\kotlin\com\ali\menbarishaqeen"
+$stray = Join-Path $proj "android\app\src\main\kotlin\com\ali\menbaradkshk"
 if (Test-Path $stray) {
     if (-not (Get-ChildItem $stray -Recurse -File)) { Remove-Item $stray -Recurse -Force }
 }

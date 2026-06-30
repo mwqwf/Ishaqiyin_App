@@ -1,18 +1,21 @@
 import 'package:flutter/material.dart';
 
 import '../models.dart';
-import '../services/firebase_repo.dart';
+import '../services/audio_controller.dart';
+import '../services/content_repository.dart';
 import '../services/local_store.dart';
 import '../theme.dart';
+import '../utils/category_colors.dart';
+import '../utils/lesson_display.dart';
 import '../widgets/audio_item.dart';
+import '../widgets/mini_player.dart';
+import '../widgets/skeleton_loader.dart';
+import 'notifications_screen.dart';
 import 'player_screen.dart';
-import 'subcategories_screen.dart';
-import 'lessons_screen.dart';
+import 'search_delegate.dart';
 import 'settings_screen.dart';
+import 'subcategories_screen.dart';
 
-/// YouTube-style home: rails for "continue listening", "most listened",
-/// "latest", a "browse sections" rail, then a personalized vertical feed.
-/// Audio only — books live on their own tab. Settings open from the ⋮ menu.
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
 
@@ -21,39 +24,23 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
-  List<Category> _categories = [];
-  List<Subcategory> _subcategories = [];
-  List<Lesson> _lessons = [];
-  bool _loading = true;
+  final ContentRepository _repo = ContentRepository.instance;
 
   @override
   void initState() {
     super.initState();
-    _loadCache();
-    _refresh();
+    _repo.addListener(_onRepo);
+    _repo.loadFromCache();
+    _repo.refresh();
   }
 
-  void _loadCache() {
-    setState(() {
-      _categories = LocalStore.getCategories();
-      _subcategories = LocalStore.getSubcategories();
-      _lessons = LocalStore.getLessons();
-      _loading = _lessons.isEmpty && _categories.isEmpty;
-    });
+  @override
+  void dispose() {
+    _repo.removeListener(_onRepo);
+    super.dispose();
   }
 
-  Future<void> _refresh() async {
-    final cats = await FirebaseRepo.fetchCategories();
-    final subs = await FirebaseRepo.fetchSubcategories();
-    final lessons = await FirebaseRepo.fetchAllLessons();
-    if (!mounted) return;
-    setState(() {
-      _categories = cats;
-      _subcategories = subs;
-      _lessons = lessons;
-      _loading = false;
-    });
-  }
+  void _onRepo() => setState(() {});
 
   void _openPlayer(Lesson l, List<Lesson> playlist) {
     Navigator.push(
@@ -65,26 +52,30 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final newest = [..._lessons]
-      ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
-    final newestTop = newest.take(15).toList();
-    final most = FirebaseRepo.mostListened(_lessons, limit: 15);
-    final cont = FirebaseRepo.continueListening(_lessons);
-    final feed = FirebaseRepo.recommendedFeed(_lessons, limit: 50);
-
     return Scaffold(
       appBar: AppBar(
-        title: const Text('تطبيق الإسحاقيين'),
+        title: const Text('منبر ادكصهك'),
         actions: [
+          if (_repo.syncing)
+            const Padding(
+              padding: EdgeInsets.all(14),
+              child: SizedBox(
+                width: 18,
+                height: 18,
+                child: CircularProgressIndicator(
+                    strokeWidth: 2, color: Colors.white),
+              ),
+            ),
+          const NotificationBell(),
           IconButton(
             icon: const Icon(Icons.search),
             tooltip: 'بحث',
             onPressed: () => showSearch(
               context: context,
-              delegate: _ContentSearchDelegate(
-                categories: _categories,
-                subcategories: _subcategories,
-                lessons: _lessons,
+              delegate: ContentSearchDelegate(
+                categories: _repo.categories,
+                subcategories: _repo.subcategories,
+                lessons: _repo.lessons,
               ),
             ),
           ),
@@ -95,24 +86,43 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
         ],
       ),
-      body: RefreshIndicator(
-        onRefresh: _refresh,
-        child: _loading
-            ? const Center(child: CircularProgressIndicator())
-            : _lessons.isEmpty
-                ? _emptyState()
-                : ListView(
-                    children: [
-                      if (_categories.isNotEmpty) _sectionsRail(),
-                      if (cont.isNotEmpty) _audioRail('تابع الاستماع', cont),
-                      if (most.isNotEmpty) _audioRail('الأكثر استماعاً', most),
-                      if (newestTop.isNotEmpty) _audioRail('الأحدث', newestTop),
-                      _railHeader('مقترح لك'),
-                      ...feed.map((l) => AudioItem(lesson: l, playlist: feed)),
-                      const SizedBox(height: 16),
-                    ],
-                  ),
+      body: Column(
+        children: [
+          Expanded(
+            child: RefreshIndicator(
+              onRefresh: () => _repo.refresh(force: true),
+              child: _repo.loading
+                  ? const HomeSkeleton()
+                  : _repo.lessons.isEmpty
+                      ? _emptyState()
+                      : _homeList(),
+            ),
+          ),
+          const MiniPlayer(),
+        ],
       ),
+    );
+  }
+
+  Widget _homeList() {
+    return ListView(
+      children: [
+        if (_repo.categories.isNotEmpty) _sectionsRail(),
+        if (_repo.continueList.isNotEmpty)
+          _audioRail('تابع الاستماع', _repo.continueList, showProgress: true),
+        if (_repo.mostListened.isNotEmpty)
+          _audioRail('الأكثر استماعاً', _repo.mostListened),
+        if (_repo.newestTop.isNotEmpty)
+          _audioRail('الأحدث', _repo.newestTop),
+        if (_repo.continueSection.isNotEmpty)
+          _audioRail('استكمل قسمك', _repo.continueSection),
+        if (_repo.randomToday.isNotEmpty)
+          _audioRail('قسم اليوم', _repo.randomToday),
+        _railHeader('مقترح لك'),
+        ..._repo.feed.map((l) =>
+            AudioItem(lesson: l, playlist: _repo.feed, showActions: false)),
+        const SizedBox(height: 16),
+      ],
     );
   }
 
@@ -132,15 +142,51 @@ class _HomeScreenState extends State<HomeScreen> {
           child: ListView.builder(
             scrollDirection: Axis.horizontal,
             padding: const EdgeInsets.symmetric(horizontal: 12),
-            itemCount: _categories.length,
+            itemCount: _repo.categories.length,
             itemBuilder: (context, i) {
-              final c = _categories[i];
-              return _CategoryChip(
-                category: c,
-                onTap: () => Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                      builder: (_) => SubcategoriesScreen(category: c)),
+              final c = _repo.categories[i];
+              final color = colorForCategory(c.id);
+              return Padding(
+                padding: const EdgeInsets.only(left: 10),
+                child: Semantics(
+                  label: 'قسم ${c.name}',
+                  button: true,
+                  child: InkWell(
+                    onTap: () => Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                          builder: (_) => SubcategoriesScreen(category: c)),
+                    ),
+                    borderRadius: BorderRadius.circular(16),
+                    child: Container(
+                      width: 112,
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        gradient: LinearGradient(
+                          colors: [color, kSlate],
+                          begin: Alignment.topLeft,
+                          end: Alignment.bottomRight,
+                        ),
+                        borderRadius: BorderRadius.circular(16),
+                      ),
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Icon(iconForCategory(c.id),
+                              color: Colors.white, size: 30),
+                          const SizedBox(height: 8),
+                          Text(
+                            c.name,
+                            maxLines: 2,
+                            textAlign: TextAlign.center,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                                color: Colors.white, fontSize: 14),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
                 ),
               );
             },
@@ -150,19 +196,21 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  Widget _audioRail(String title, List<Lesson> lessons) {
+  Widget _audioRail(String title, List<Lesson> lessons,
+      {bool showProgress = false}) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         _railHeader(title),
         SizedBox(
-          height: 170,
+          height: showProgress ? 190 : 170,
           child: ListView.builder(
             scrollDirection: Axis.horizontal,
             padding: const EdgeInsets.symmetric(horizontal: 12),
             itemCount: lessons.length,
             itemBuilder: (context, i) => _AudioCard(
               lesson: lessons[i],
+              showProgress: showProgress,
               onTap: () => _openPlayer(lessons[i], lessons),
             ),
           ),
@@ -186,186 +234,111 @@ class _HomeScreenState extends State<HomeScreen> {
       );
 }
 
-class _CategoryChip extends StatelessWidget {
-  final Category category;
-  final VoidCallback onTap;
-  const _CategoryChip({required this.category, required this.onTap});
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.only(left: 10),
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(16),
-        child: Container(
-          width: 112,
-          padding: const EdgeInsets.all(10),
-          decoration: BoxDecoration(
-            color: kSlate,
-            borderRadius: BorderRadius.circular(16),
-          ),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              const Icon(Icons.folder, color: kGold, size: 30),
-              const SizedBox(height: 8),
-              Text(
-                category.name,
-                maxLines: 2,
-                textAlign: TextAlign.center,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(color: Colors.white, fontSize: 14),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
 class _AudioCard extends StatelessWidget {
   final Lesson lesson;
   final VoidCallback onTap;
-  const _AudioCard({required this.lesson, required this.onTap});
+  final bool showProgress;
+  const _AudioCard({
+    required this.lesson,
+    required this.onTap,
+    this.showProgress = false,
+  });
 
   @override
   Widget build(BuildContext context) {
+    final audio = AudioController.instance;
+    final accent = colorForCategory(lesson.categoryId);
+    final durMs = lesson.durationMs > 0
+        ? lesson.durationMs
+        : LocalStore.getDurationMs(lesson.id);
+    final progress = showProgress ? audio.progressFor(lesson.id) : 0.0;
+    if (progress == 0 && showProgress) {
+      final saved = LocalStore.getPosition(lesson.id);
+      if (saved > 0 && durMs > 0) {
+        // use saved position when not currently playing
+      }
+    }
+    final savedProgress = durMs > 0
+        ? (LocalStore.getPosition(lesson.id) / durMs).clamp(0.0, 1.0)
+        : 0.0;
+    final displayProgress =
+        showProgress ? (progress > 0 ? progress : savedProgress) : 0.0;
+
     return Padding(
       padding: const EdgeInsets.only(left: 10),
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(16),
-        child: SizedBox(
-          width: 150,
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Container(
-                height: 96,
-                width: 150,
-                alignment: Alignment.center,
-                decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(16),
-                  gradient: const LinearGradient(
-                    colors: [kTeal, kSlate],
-                    begin: Alignment.topLeft,
-                    end: Alignment.bottomRight,
-                  ),
+      child: Semantics(
+        label: 'درس ${lessonDisplayTitle(lesson)}',
+        button: true,
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(16),
+          child: SizedBox(
+            width: 150,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Stack(
+                  children: [
+                    Container(
+                      height: 96,
+                      width: 150,
+                      alignment: Alignment.center,
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(16),
+                        gradient: LinearGradient(
+                          colors: [accent, kSlate],
+                          begin: Alignment.topLeft,
+                          end: Alignment.bottomRight,
+                        ),
+                      ),
+                      child: Icon(iconForCategory(lesson.categoryId),
+                          color: Colors.white, size: 44),
+                    ),
+                    if (durMs > 0)
+                      Positioned(
+                        bottom: 6,
+                        left: 6,
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 6, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: Colors.black54,
+                            borderRadius: BorderRadius.circular(6),
+                          ),
+                          child: Text(
+                            formatDuration(Duration(milliseconds: durMs)),
+                            style: const TextStyle(
+                                color: Colors.white, fontSize: 11),
+                          ),
+                        ),
+                      ),
+                  ],
                 ),
-                child: const Icon(Icons.play_circle_fill,
-                    color: Colors.white, size: 44),
-              ),
-              const SizedBox(height: 6),
-              Text(
-                lesson.title,
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-                style:
-                    const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
-              ),
-            ],
+                if (showProgress && displayProgress > 0) ...[
+                  const SizedBox(height: 4),
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(2),
+                    child: LinearProgressIndicator(
+                      value: displayProgress,
+                      minHeight: 3,
+                      backgroundColor: Colors.grey.shade300,
+                      color: kGreen,
+                    ),
+                  ),
+                ],
+                const SizedBox(height: 6),
+                Text(
+                  lessonDisplayTitle(lesson),
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                      fontSize: 14, fontWeight: FontWeight.w600),
+                ),
+              ],
+            ),
           ),
         ),
       ),
     );
-  }
-}
-
-class _ContentSearchDelegate extends SearchDelegate {
-  final List<Category> categories;
-  final List<Subcategory> subcategories;
-  final List<Lesson> lessons;
-
-  _ContentSearchDelegate({
-    required this.categories,
-    required this.subcategories,
-    required this.lessons,
-  });
-
-  @override
-  String get searchFieldLabel => 'ابحث...';
-
-  @override
-  List<Widget> buildActions(BuildContext context) => [
-        if (query.isNotEmpty)
-          IconButton(
-            icon: const Icon(Icons.clear),
-            onPressed: () => query = '',
-          ),
-      ];
-
-  @override
-  Widget buildLeading(BuildContext context) => IconButton(
-        icon: const Icon(Icons.arrow_back),
-        onPressed: () => close(context, null),
-      );
-
-  @override
-  Widget buildResults(BuildContext context) => _results(context);
-
-  @override
-  Widget buildSuggestions(BuildContext context) => _results(context);
-
-  Widget _results(BuildContext context) {
-    final q = query.trim().toLowerCase();
-    if (q.isEmpty) {
-      return const SizedBox.shrink();
-    }
-    final catRes =
-        categories.where((c) => c.name.toLowerCase().contains(q)).toList();
-    final subRes =
-        subcategories.where((s) => s.name.toLowerCase().contains(q)).toList();
-    final lesRes = lessons
-        .where((l) => l.title.toLowerCase().contains(q))
-        .take(50)
-        .toList();
-
-    final tiles = <Widget>[];
-    for (final c in catRes) {
-      tiles.add(ListTile(
-        leading: const Icon(Icons.folder, color: kTeal),
-        title: Text(c.name),
-        onTap: () {
-          close(context, null);
-          Navigator.push(
-            context,
-            MaterialPageRoute(builder: (_) => SubcategoriesScreen(category: c)),
-          );
-        },
-      ));
-    }
-    for (final s in subRes) {
-      tiles.add(ListTile(
-        leading: const Icon(Icons.folder_open, color: kBlue),
-        title: Text(s.name),
-        onTap: () {
-          close(context, null);
-          Navigator.push(
-            context,
-            MaterialPageRoute(builder: (_) => LessonsScreen(subcategory: s)),
-          );
-        },
-      ));
-    }
-    for (final l in lesRes) {
-      tiles.add(ListTile(
-        leading: const Icon(Icons.music_note, color: kGold),
-        title: Text(l.title),
-        onTap: () {
-          close(context, null);
-          Navigator.push(
-            context,
-            MaterialPageRoute(
-                builder: (_) => PlayerScreen(lesson: l, playlist: lesRes)),
-          );
-        },
-      ));
-    }
-    if (tiles.isEmpty) {
-      return const Center(child: Text('لا توجد نتائج'));
-    }
-    return ListView(children: tiles);
   }
 }

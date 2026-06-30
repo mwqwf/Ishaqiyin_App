@@ -6,7 +6,7 @@ class AppState extends ChangeNotifier {
   ThemeMode _themeMode = ThemeMode.light;
   double _fontScale = 1.0;
   bool _autoDownloadEnabled = false;
-  String? _autoDownloadTarget; // 'recent' | 'main' | 'books'
+  String? _autoDownloadTarget; // 'recent' | 'main'
 
   ThemeMode get themeMode => _themeMode;
   double get fontScale => _fontScale;

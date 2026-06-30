@@ -3,8 +3,6 @@ import 'package:dio/dio.dart';
 import 'package:path_provider/path_provider.dart';
 import 'local_store.dart';
 
-/// Downloads audio + PDF into the app's private documents directory.
-/// No external storage permissions are required (scoped storage).
 class DownloadService {
   static final Dio _dio = Dio();
 
@@ -17,7 +15,6 @@ class DownloadService {
     return d;
   }
 
-  // ---------------- audio ----------------
   static String? localAudioPath(String lessonId) {
     final p = LocalStore.getAudioDownloads()[lessonId];
     if (p != null && File(p).existsSync()) return p;
@@ -26,6 +23,19 @@ class DownloadService {
 
   static bool isAudioDownloaded(String lessonId) =>
       localAudioPath(lessonId) != null;
+
+  static List<MapEntry<String, String>> allDownloads() =>
+      LocalStore.getAudioDownloads().entries.toList();
+
+  static Future<void> deleteDownload(String lessonId) async {
+    final path = localAudioPath(lessonId);
+    if (path != null) {
+      try {
+        await File(path).delete();
+      } catch (_) {}
+    }
+    await LocalStore.removeAudioDownload(lessonId);
+  }
 
   static Future<String?> downloadAudio(
     String id,
@@ -48,37 +58,7 @@ class DownloadService {
       },
     );
     await LocalStore.setAudioDownload(id, path);
-    return path;
-  }
-
-  // ---------------- books (pdf) ----------------
-  static String? localBookPath(String bookId) {
-    final p = LocalStore.getBookDownloads()[bookId];
-    if (p != null && File(p).existsSync()) return p;
-    return null;
-  }
-
-  static bool isBookDownloaded(String bookId) => localBookPath(bookId) != null;
-
-  static Future<String?> downloadBook(
-    String id,
-    String url, {
-    void Function(double percent)? onProgress,
-  }) async {
-    if (url.isEmpty || !url.startsWith('http')) return null;
-    final dir = await _dir('books');
-    final path = '${dir.path}/$id.pdf';
-    await _dio.download(
-      url,
-      path,
-      options: Options(headers: {'User-Agent': 'Mozilla/5.0 (IshaqiyinApp)'}),
-      onReceiveProgress: (received, total) {
-        if (total > 0 && onProgress != null) {
-          onProgress(received / total * 100);
-        }
-      },
-    );
-    await LocalStore.setBookDownload(id, path);
+    await LocalStore.trackEvent('download');
     return path;
   }
 }

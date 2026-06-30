@@ -1,7 +1,6 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 
 /// Some legacy documents are stored wrapped as `{ data: {...} }`.
-/// Unwrap to the inner map when present (mirrors the old `extractData`).
 Map<String, dynamic> _unwrap(Map<String, dynamic> raw) {
   final inner = raw['data'];
   if (inner is Map) {
@@ -31,6 +30,13 @@ int _int(dynamic v) {
   if (v is num) return v.toInt();
   if (v is String) return int.tryParse(v) ?? 0;
   return 0;
+}
+
+/// Picks the best available title from legacy field names.
+String _extractTitle(Map<String, dynamic> d) {
+  final title = _str(d['title']);
+  if (title.isNotEmpty) return title;
+  return _str(d['name']);
 }
 
 class Category {
@@ -97,10 +103,12 @@ class Lesson {
   final String subcategoryId;
   final String audioUrl;
   final DateTime createdAt;
-
-  /// Global, anonymous, aggregate play counter (read from Firestore `views`).
-  /// Used only to rank "most listened". Defaults to 0 when absent.
   final int views;
+
+  /// Optional metadata (may be absent in Firestore; duration also cached locally).
+  final String speaker;
+  final String description;
+  final int durationMs;
 
   Lesson({
     required this.id,
@@ -110,6 +118,9 @@ class Lesson {
     required this.audioUrl,
     required this.createdAt,
     this.views = 0,
+    this.speaker = '',
+    this.description = '',
+    this.durationMs = 0,
   });
 
   static String _extractSubcategoryId(Map<String, dynamic> d) {
@@ -125,12 +136,15 @@ class Lesson {
     final d = _unwrap(raw);
     return Lesson(
       id: id,
-      title: _str(d['title']),
+      title: _extractTitle(d),
       categoryId: _str(d['categoryId']),
       subcategoryId: _extractSubcategoryId(d),
       audioUrl: _str(d['audioUrl']),
       createdAt: _parseDate(d['createdAt']),
       views: _int(d['views']),
+      speaker: _str(d['speaker'] ?? d['sheikh'] ?? d['reader']),
+      description: _str(d['description']),
+      durationMs: _int(d['durationMs'] ?? d['duration']),
     );
   }
 
@@ -142,46 +156,55 @@ class Lesson {
         'audioUrl': audioUrl,
         'createdAt': createdAt.toIso8601String(),
         'views': views,
+        'speaker': speaker,
+        'description': description,
+        'durationMs': durationMs,
       };
 
   factory Lesson.fromCache(Map<String, dynamic> m) =>
       Lesson.fromMap(_str(m['_id']), m);
+
+  Lesson copyWith({int? durationMs, int? views}) => Lesson(
+        id: id,
+        title: title,
+        categoryId: categoryId,
+        subcategoryId: subcategoryId,
+        audioUrl: audioUrl,
+        createdAt: createdAt,
+        views: views ?? this.views,
+        speaker: speaker,
+        description: description,
+        durationMs: durationMs ?? this.durationMs,
+      );
 }
 
-class Book {
+/// A user-created playlist of lessons (stored on-device only).
+class Playlist {
   final String id;
-  final String name;
-  final String author;
-  final String pdfUrl;
+  String name;
+  List<String> lessonIds;
   final DateTime createdAt;
 
-  Book({
+  Playlist({
     required this.id,
     required this.name,
-    required this.author,
-    required this.pdfUrl,
+    required this.lessonIds,
     required this.createdAt,
   });
 
-  factory Book.fromMap(String id, Map<String, dynamic> raw) {
-    final d = _unwrap(raw);
-    return Book(
-      id: id,
-      name: _str(d['name']),
-      author: _str(d['author']),
-      pdfUrl: _str(d['pdfUrl']),
-      createdAt: _parseDate(d['createdAt']),
-    );
-  }
-
-  Map<String, dynamic> toCache() => {
-        '_id': id,
+  Map<String, dynamic> toJson() => {
+        'id': id,
         'name': name,
-        'author': author,
-        'pdfUrl': pdfUrl,
+        'lessonIds': lessonIds,
         'createdAt': createdAt.toIso8601String(),
       };
 
-  factory Book.fromCache(Map<String, dynamic> m) =>
-      Book.fromMap(_str(m['_id']), m);
+  factory Playlist.fromJson(Map<String, dynamic> m) => Playlist(
+        id: _str(m['id']),
+        name: _str(m['name']),
+        lessonIds: (m['lessonIds'] is List)
+            ? (m['lessonIds'] as List).map((e) => e.toString()).toList()
+            : <String>[],
+        createdAt: _parseDate(m['createdAt']),
+      );
 }

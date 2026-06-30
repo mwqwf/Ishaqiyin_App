@@ -1,4 +1,4 @@
-# تشغيل تطبيق الإسحاقيين (Flutter)
+# تشغيل منبر ادكصهك (Flutter)
 
 ## الطريقة التلقائية (مستحسنة)
 من PowerShell داخل مجلد المشروع:
@@ -25,7 +25,7 @@ flutter run
 - بعد التثبيت نفّذ `flutter doctor` وعالِج أي ✗.
 
 ## ماذا يفعل setup.ps1
-1. يولّد سقالة Android: `flutter create --platforms=android --org com.ali --project-name ishaqiyin_app .`
+1. يولّد سقالة Android: `flutter create --platforms=android --org com.ali --project-name menbaradkshk .`
    - لا يلمس `lib/` ولا `pubspec.yaml` (الموجودان مسبقاً).
 2. ينسخ `_overrides/AndroidManifest.xml` فوق المانيفست المولَّد (صلاحيات نظيفة + خدمة الصوت في الخلفية).
 3. `flutter pub get`

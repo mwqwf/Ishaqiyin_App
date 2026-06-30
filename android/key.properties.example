@@ -1,0 +1,14 @@
+# مثال لإعداد توقيع الإصدار (للنشر على Google Play).
+# انسخ هذا الملف باسم key.properties (في نفس المجلد android/) واملأ القيم الحقيقية.
+# هذا الملف الحقيقي (key.properties) و *.jks مُستثنيان في .gitignore — لا تُشاركهما.
+#
+# 1) أنشئ مفتاحاً مرة واحدة (يطلب منك كلمات مرور):
+#    keytool -genkey -v -keystore upload-keystore.jks -keyalg RSA -keysize 2048 -validity 10000 -alias upload
+#    ثم ضع upload-keystore.jks داخل مجلد android/ (أو ضع مساره الكامل في storeFile).
+# 2) بعد إنشاء key.properties، ابنِ الحزمة:
+#    flutter build appbundle --release
+
+storePassword=ضع_كلمة_مرور_المتجر
+keyPassword=ضع_كلمة_مرور_المفتاح
+keyAlias=upload
+storeFile=upload-keystore.jks
