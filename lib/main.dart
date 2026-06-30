@@ -13,7 +13,7 @@ import 'services/local_store.dart';
 import 'services/notification_service.dart';
 import 'state/app_state.dart';
 import 'theme.dart';
-import 'screens/home_screen.dart';
+import 'screens/root_shell.dart';
 
 final GlobalKey<NavigatorState> rootNavigatorKey = GlobalKey<NavigatorState>();
 
@@ -99,15 +99,10 @@ class _MyAppState extends State<MyApp> {
             builder: (context, child) {
               return Directionality(
                 textDirection: TextDirection.rtl,
-                child: MediaQuery(
-                  data: MediaQuery.of(context).copyWith(
-                    textScaler: TextScaler.linear(state.fontScale),
-                  ),
-                  child: child!,
-                ),
+                child: child!,
               );
             },
-            home: const HomeScreen(),
+            home: const RootShell(),
           );
         },
       ),

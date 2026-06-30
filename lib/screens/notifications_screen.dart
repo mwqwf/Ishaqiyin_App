@@ -1,10 +1,15 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 
+import '../services/content_repository.dart';
 import '../services/local_store.dart';
 import '../theme.dart';
+import 'lessons_screen.dart';
+import 'player_screen.dart';
+import 'subcategories_screen.dart';
 
 /// مصدر الإشعارات المشترك (مجموعة notifications التي تكتبها Cloud Function).
+/// يُخفي محلياً ما حذفه المستخدم.
 class NotificationsFeed {
   static Stream<List<NotifItem>> stream({int limit = 50}) {
     return FirebaseFirestore.instance
@@ -12,7 +17,13 @@ class NotificationsFeed {
         .orderBy('createdAtMs', descending: true)
         .limit(limit)
         .snapshots()
-        .map((s) => s.docs.map((d) => NotifItem.fromDoc(d.id, d.data())).toList());
+        .map((s) {
+      final dismissed = LocalStore.getDismissedNotifIds().toSet();
+      return s.docs
+          .map((d) => NotifItem.fromDoc(d.id, d.data()))
+          .where((n) => !dismissed.contains(n.id))
+          .toList();
+    });
   }
 }
 
@@ -21,6 +32,7 @@ class NotifItem {
   final String title;
   final String body;
   final String type;
+  final String refId;
   final int createdAtMs;
 
   NotifItem({
@@ -28,6 +40,7 @@ class NotifItem {
     required this.title,
     required this.body,
     required this.type,
+    required this.refId,
     required this.createdAtMs,
   });
 
@@ -46,6 +59,7 @@ class NotifItem {
       title: (d['title'] ?? '').toString(),
       body: (d['body'] ?? '').toString(),
       type: (d['type'] ?? '').toString(),
+      refId: (d['refId'] ?? '').toString(),
       createdAtMs: ms,
     );
   }
@@ -117,6 +131,44 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
     }
   }
 
+  /// الانتقال إلى العنصر المرتبط بالإشعار (نمط نبراس).
+  void _openTarget(NotifItem n) {
+    final repo = ContentRepository.instance;
+    Widget? screen;
+    switch (n.type) {
+      case 'lesson':
+        final l = repo.lessonById(n.refId);
+        if (l != null) {
+          final playlist = repo.lessons
+              .where((x) => x.subcategoryId == l.subcategoryId)
+              .toList();
+          screen = PlayerScreen(
+              lesson: l, playlist: playlist.isNotEmpty ? playlist : [l]);
+        }
+        break;
+      case 'subcategory':
+        final s = repo.subcategoryById(n.refId);
+        if (s != null) screen = LessonsScreen(subcategory: s);
+        break;
+      case 'category':
+        final c = repo.categoryById(n.refId);
+        if (c != null) screen = SubcategoriesScreen(category: c);
+        break;
+    }
+    if (screen != null) {
+      Navigator.push(context, MaterialPageRoute(builder: (_) => screen!));
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('العنصر غير متاح بعد — حدّث المحتوى.')),
+      );
+    }
+  }
+
+  Future<void> _dismiss(NotifItem n) async {
+    await LocalStore.dismissNotif(n.id);
+    if (mounted) setState(() {});
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -143,16 +195,42 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
             separatorBuilder: (_, __) => const Divider(height: 1),
             itemBuilder: (context, i) {
               final n = items[i];
-              return ListTile(
-                leading: CircleAvatar(
-                  backgroundColor: kTeal,
-                  child: Icon(_icon(n.type), color: Colors.white, size: 20),
+              return Dismissible(
+                key: ValueKey(n.id),
+                direction: DismissDirection.endToStart,
+                background: Container(
+                  color: Colors.red,
+                  alignment: AlignmentDirectional.centerStart,
+                  padding: const EdgeInsets.symmetric(horizontal: 20),
+                  child: const Icon(Icons.delete, color: Colors.white),
                 ),
-                title: Text(n.title.isNotEmpty ? n.title : 'إشعار',
-                    style: const TextStyle(fontWeight: FontWeight.w600)),
-                subtitle: n.body.isNotEmpty ? Text(n.body) : null,
-                trailing: Text(_ago(n.createdAtMs),
-                    style: const TextStyle(fontSize: 11, color: Colors.grey)),
+                onDismissed: (_) => _dismiss(n),
+                child: ListTile(
+                  leading: CircleAvatar(
+                    backgroundColor: kTeal,
+                    child: Icon(_icon(n.type), color: Colors.white, size: 20),
+                  ),
+                  title: Text(n.title.isNotEmpty ? n.title : 'إشعار',
+                      style: const TextStyle(fontWeight: FontWeight.w600)),
+                  subtitle: n.body.isNotEmpty ? Text(n.body) : null,
+                  trailing: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    children: [
+                      Text(_ago(n.createdAtMs),
+                          style: const TextStyle(
+                              fontSize: 11, color: Colors.grey)),
+                      IconButton(
+                        tooltip: 'حذف',
+                        visualDensity: VisualDensity.compact,
+                        icon: const Icon(Icons.close,
+                            size: 16, color: Colors.grey),
+                        onPressed: () => _dismiss(n),
+                      ),
+                    ],
+                  ),
+                  onTap: () => _openTarget(n),
+                ),
               );
             },
           );

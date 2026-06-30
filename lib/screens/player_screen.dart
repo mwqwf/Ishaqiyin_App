@@ -99,7 +99,15 @@ class _PlayerScreenState extends State<PlayerScreen> {
     if (pos.inSeconds > 10) {
       text += '\nمن الدقيقة ${pos.inMinutes}:${(pos.inSeconds % 60).toString().padLeft(2, '0')}';
     }
-    await Share.share(text, subject: lessonDisplayTitle(l));
+    // إن كان الدرس محمّلاً → نشارك الملف الصوتي نفسه؛ وإلا → نشارك رابطاً
+    // يفتح الدرس داخل التطبيق.
+    final local = DownloadService.localAudioPath(l.id);
+    if (local != null) {
+      await Share.shareXFiles([XFile(local)],
+          text: text, subject: lessonDisplayTitle(l));
+    } else {
+      await Share.share(text, subject: lessonDisplayTitle(l));
+    }
   }
 
   Future<void> _addToPlaylist(Lesson l) async {

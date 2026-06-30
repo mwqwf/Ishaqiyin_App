@@ -356,4 +356,23 @@ class LocalStore {
   static int getLastSeenNotifMs() => _p.getInt('notif_last_seen_ms') ?? 0;
   static Future<void> setLastSeenNotifMs(int v) =>
       _p.setInt('notif_last_seen_ms', v);
+
+  /// تفعيل/إيقاف الإشعارات (افتراضياً مُفعّلة).
+  static bool getNotificationsEnabled() => _p.getBool('notif_enabled') ?? true;
+  static Future<void> setNotificationsEnabled(bool v) =>
+      _p.setBool('notif_enabled', v);
+
+  /// الإشعارات المحذوفة محلياً (لا تُحذف من السحابة المشتركة).
+  static List<String> getDismissedNotifIds() =>
+      _getStringList('notif_dismissed');
+  static bool isNotifDismissed(String id) =>
+      getDismissedNotifIds().contains(id);
+  static Future<void> dismissNotif(String id) async {
+    final list = getDismissedNotifIds();
+    if (!list.contains(id)) {
+      list.add(id);
+      if (list.length > 500) list.removeRange(0, list.length - 500);
+      await _setStringList('notif_dismissed', list);
+    }
+  }
 }

@@ -35,15 +35,20 @@ class NotificationService {
     _ready = true;
   }
 
-  /// تهيئة الدفع: طلب الإذن + الاشتراك في موضوع المحتوى + عرض الرسائل الواردة.
+  /// تهيئة الدفع: الاشتراك في موضوع المحتوى (إن كانت الإشعارات مُفعّلة) + عرض الوارد.
   static Future<void> initPush() async {
     try {
       final messaging = FirebaseMessaging.instance;
-      await messaging.requestPermission();
-      await messaging.subscribeToTopic('content');
+      if (LocalStore.getNotificationsEnabled()) {
+        await messaging.requestPermission();
+        await messaging.subscribeToTopic('content');
+      } else {
+        await messaging.unsubscribeFromTopic('content');
+      }
 
       // المقدّمة: نعرض الإشعار يدوياً (لا يعرضه النظام تلقائياً).
       FirebaseMessaging.onMessage.listen((message) {
+        if (!LocalStore.getNotificationsEnabled()) return;
         final n = message.notification;
         if (n != null) {
           showContentNotification(n.title ?? 'منبر ادكصهك', n.body ?? '');
@@ -51,6 +56,23 @@ class NotificationService {
       });
     } catch (e) {
       debugPrint('initPush failed: $e');
+    }
+  }
+
+  /// تفعيل/إيقاف الإشعارات فعلياً: يشترك أو يلغي الاشتراك في موضوع الدفع.
+  static Future<void> setEnabled(bool enabled) async {
+    await LocalStore.setNotificationsEnabled(enabled);
+    try {
+      final messaging = FirebaseMessaging.instance;
+      if (enabled) {
+        await messaging.requestPermission();
+        await requestPermission();
+        await messaging.subscribeToTopic('content');
+      } else {
+        await messaging.unsubscribeFromTopic('content');
+      }
+    } catch (e) {
+      debugPrint('setEnabled failed: $e');
     }
   }
 

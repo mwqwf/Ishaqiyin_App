@@ -17,7 +17,9 @@ import 'settings_screen.dart';
 import 'subcategories_screen.dart';
 
 class HomeScreen extends StatefulWidget {
-  const HomeScreen({super.key});
+  /// المشغّل المصغّر يُعرض من الهيكل الرئيسي (RootShell) فلا نكرّره هنا.
+  final bool showMiniPlayer;
+  const HomeScreen({super.key, this.showMiniPlayer = true});
 
   @override
   State<HomeScreen> createState() => _HomeScreenState();
@@ -98,7 +100,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       : _homeList(),
             ),
           ),
-          const MiniPlayer(),
+          if (widget.showMiniPlayer) const MiniPlayer(),
         ],
       ),
     );

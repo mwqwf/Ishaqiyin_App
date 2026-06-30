@@ -74,11 +74,16 @@ class _AudioItemState extends State<AudioItem> {
     final repo = ContentRepository.instance;
     final cat = repo.categoryById(widget.lesson.categoryId);
     final sub = repo.subcategoryById(widget.lesson.subcategoryId);
-    await Share.share(
-      lessonShareText(widget.lesson,
-          categoryName: cat?.name, subName: sub?.name),
-      subject: lessonDisplayTitle(widget.lesson),
-    );
+    final text = lessonShareText(widget.lesson,
+        categoryName: cat?.name, subName: sub?.name);
+    // محمّل → نشارك الملف نفسه؛ غير محمّل → نشارك رابطاً يفتح داخل التطبيق.
+    final local = DownloadService.localAudioPath(widget.lesson.id);
+    if (local != null) {
+      await Share.shareXFiles([XFile(local)],
+          text: text, subject: lessonDisplayTitle(widget.lesson));
+    } else {
+      await Share.share(text, subject: lessonDisplayTitle(widget.lesson));
+    }
   }
 
   Future<void> _toggleFavorite() async {

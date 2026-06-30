@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../models.dart';
 import '../services/content_repository.dart';
+import '../services/download_service.dart';
 import '../services/firebase_repo.dart';
 import '../services/local_store.dart';
 import '../widgets/audio_item.dart';
@@ -59,12 +60,64 @@ class _LessonsScreenState extends State<LessonsScreen> {
     );
   }
 
+  bool _bulkDl = false;
+  int _dlDone = 0;
+  int _dlTotal = 0;
+
+  void _snack(String m) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(m)));
+  }
+
+  /// تحميل كل دروس القسم الفرعي دفعة واحدة (نمط يوتيوب «تنزيل الكل»).
+  Future<void> _downloadAll() async {
+    if (_bulkDl) return;
+    final pending = _lessons
+        .where((l) =>
+            l.audioUrl.isNotEmpty && !DownloadService.isAudioDownloaded(l.id))
+        .toList();
+    if (pending.isEmpty) {
+      _snack('كل دروس هذا القسم محمّلة بالفعل.');
+      return;
+    }
+    setState(() {
+      _bulkDl = true;
+      _dlDone = 0;
+      _dlTotal = pending.length;
+    });
+    for (final l in pending) {
+      try {
+        await DownloadService.downloadAudio(l.id, l.audioUrl);
+      } catch (_) {}
+      if (!mounted) return;
+      setState(() => _dlDone++);
+    }
+    if (mounted) {
+      setState(() => _bulkDl = false);
+      _snack('تم تحميل $_dlTotal درساً للاستماع دون إنترنت.');
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
         title: Text(widget.subcategory.name),
         actions: [
+          if (_bulkDl)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8),
+              child: Center(
+                child: Text('$_dlDone/$_dlTotal',
+                    style: const TextStyle(fontSize: 13)),
+              ),
+            )
+          else
+            IconButton(
+              tooltip: 'تنزيل كل دروس القسم',
+              icon: const Icon(Icons.download_for_offline_outlined),
+              onPressed: _lessons.isEmpty ? null : _downloadAll,
+            ),
           IconButton(
             tooltip: 'القسم الرئيسي',
             icon: const Icon(Icons.drive_folder_upload),
