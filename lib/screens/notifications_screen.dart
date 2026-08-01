@@ -1,29 +1,134 @@
+import 'dart:async';
+
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
 import '../services/content_repository.dart';
 import '../services/local_store.dart';
+import '../services/submission_service.dart';
 import '../theme.dart';
 import 'lessons_screen.dart';
 import 'player_screen.dart';
 import 'subcategories_screen.dart';
+import 'my_submissions_screen.dart';
 
-/// مصدر الإشعارات المشترك (مجموعة notifications التي تكتبها Cloud Function).
+/// مصدر الإشعارات المشترك (مجموعة notifications التي تكتبها Cloud Function)
+/// مدموجاً مع قرارات «مساهماتي» المحسومة لمن لديه هوية مساهمات.
 /// يُخفي محلياً ما حذفه المستخدم.
 class NotificationsFeed {
   static Stream<List<NotifItem>> stream({int limit = 50}) {
-    return FirebaseFirestore.instance
-        .collection('notifications')
-        .orderBy('createdAtMs', descending: true)
-        .limit(limit)
-        .snapshots()
-        .map((s) {
+    final db = FirebaseFirestore.instance;
+    late StreamController<List<NotifItem>> controller;
+    StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? publicSub;
+    StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? privateSub;
+    StreamSubscription<List<LessonSubmission>>? subsSub;
+    StreamSubscription<User?>? authSub;
+    var publicItems = <NotifItem>[];
+    var privateItems = <NotifItem>[];
+    var submissionItems = <NotifItem>[];
+
+    void emit() {
+      if (controller.isClosed) return;
       final dismissed = LocalStore.getDismissedNotifIds().toSet();
-      return s.docs
-          .map((d) => NotifItem.fromDoc(d.id, d.data()))
+      final items = [...publicItems, ...privateItems, ...submissionItems]
           .where((n) => !dismissed.contains(n.id))
           .toList();
-    });
+      items.sort((a, b) => b.createdAtMs.compareTo(a.createdAtMs));
+      controller.add(items.take(limit).toList());
+    }
+
+    controller = StreamController<List<NotifItem>>(
+      onListen: () {
+        publicSub = db
+            .collection('notifications')
+            .orderBy('createdAtMs', descending: true)
+            .limit(limit)
+            .snapshots()
+            .listen((snap) {
+          publicItems = snap.docs
+              .map((d) => NotifItem.fromDoc('public:${d.id}', d.data()))
+              .toList();
+          emit();
+        }, onError: controller.addError);
+
+        authSub = FirebaseAuth.instance.authStateChanges().listen((user) {
+          unawaited(privateSub?.cancel());
+          unawaited(subsSub?.cancel());
+          privateItems = <NotifItem>[];
+          submissionItems = <NotifItem>[];
+          if (user == null) {
+            emit();
+            return;
+          }
+          privateSub = db
+              .collection('user_notifications')
+              .doc(user.uid)
+              .collection('items')
+              .orderBy('createdAtMs', descending: true)
+              .limit(limit)
+              .snapshots()
+              .listen((snap) {
+            privateItems = snap.docs
+                .map((d) => NotifItem.fromDoc('private:${d.id}', d.data()))
+                .toList();
+            emit();
+          }, onError: controller.addError);
+
+          // قرارات مساهماتي المحسومة تظهر في الجرس كإشعارات اصطناعية.
+          subsSub = SubmissionService.watchMine().listen((subs) {
+            submissionItems = subs
+                .where((s) => s.status != 'pending')
+                .map(_decisionItem)
+                .whereType<NotifItem>()
+                .toList();
+            emit();
+          }, onError: (Object e) {
+            // بث مساعد — خطؤه لا يُسقط قائمة الإشعارات الرئيسية.
+            debugPrint('submissions feed error: $e');
+          });
+        }, onError: controller.addError);
+      },
+      onCancel: () async {
+        await publicSub?.cancel();
+        await privateSub?.cancel();
+        await subsSub?.cancel();
+        await authSub?.cancel();
+      },
+    );
+    return controller.stream;
+  }
+
+  /// يحوّل مساهمة محسومة إلى عنصر إشعار بنفس صياغات مراقب القرارات.
+  static NotifItem? _decisionItem(LessonSubmission s) {
+    String title;
+    String body;
+    switch (s.status) {
+      case 'approved':
+        title = 'نُشرت مساهمتك 🎉';
+        body = 'وافق المشرفون على «${s.title}» ونُشرت كما هي. شكراً لمساهمتك!';
+        break;
+      case 'approved_edited':
+        title = 'نُشرت مساهمتك بعد تعديل 🎉';
+        body = 'نُشرت «${s.title}» بعد تحسينها من المشرفين. شكراً لمساهمتك!';
+        break;
+      case 'rejected':
+        title = 'اعتذار عن نشر مساهمتك';
+        body = s.rejectReason.isEmpty
+            ? 'لم يوافق المشرفون على «${s.title}».'
+            : 'لم تُنشر «${s.title}»: ${s.rejectReason}';
+        break;
+      default:
+        return null;
+    }
+    return NotifItem(
+      id: 'subdec_${s.id}',
+      title: title,
+      body: body,
+      type: 'submission',
+      refId: s.id,
+      createdAtMs: s.decidedAtMs,
+    );
   }
 }
 
@@ -109,7 +214,8 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
 
   String _ago(int ms) {
     if (ms <= 0) return '';
-    final d = DateTime.now().difference(DateTime.fromMillisecondsSinceEpoch(ms));
+    final d =
+        DateTime.now().difference(DateTime.fromMillisecondsSinceEpoch(ms));
     if (d.inMinutes < 1) return 'الآن';
     if (d.inMinutes < 60) return 'قبل ${d.inMinutes} د';
     if (d.inHours < 24) return 'قبل ${d.inHours} س';
@@ -126,6 +232,8 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
         return Icons.folder_open;
       case 'book':
         return Icons.menu_book;
+      case 'submission':
+        return Icons.how_to_vote;
       default:
         return Icons.campaign_outlined;
     }
@@ -136,6 +244,9 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
     final repo = ContentRepository.instance;
     Widget? screen;
     switch (n.type) {
+      case 'submission':
+        screen = const MySubmissionsScreen();
+        break;
       case 'lesson':
         final l = repo.lessonById(n.refId);
         if (l != null) {

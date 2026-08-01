@@ -27,7 +27,15 @@ String _fmt(Duration d) {
 class PlayerScreen extends StatefulWidget {
   final Lesson lesson;
   final List<Lesson> playlist;
-  const PlayerScreen({super.key, required this.lesson, required this.playlist});
+
+  /// عند فتح الدرس من «لحظة» مشاركة: ابدأ التشغيل عند هذه الثانية.
+  final int? startAtMs;
+  const PlayerScreen({
+    super.key,
+    required this.lesson,
+    required this.playlist,
+    this.startAtMs,
+  });
 
   @override
   State<PlayerScreen> createState() => _PlayerScreenState();
@@ -38,7 +46,6 @@ class _PlayerScreenState extends State<PlayerScreen> {
   List<Lesson> _all = [];
   bool _downloading = false;
   double _progress = 0;
-  bool _favorite = false;
 
   static const _speeds = [0.75, 1.0, 1.25, 1.5, 1.75, 2.0];
 
@@ -47,22 +54,44 @@ class _PlayerScreenState extends State<PlayerScreen> {
     super.initState();
     final repo = ContentRepository.instance;
     _all = repo.lessons;
-    _favorite = LocalStore.isFavorite(widget.lesson.id);
+    // شريط العنوان خارج AnimatedBuilder — نستمع للمشغّل كي تتحدّث أيقونة
+    // المفضّلة (وبقية الأزرار) عند الانتقال التلقائي للدرس التالي.
+    _audio.addListener(_onAudioChanged);
     _audio.setPlaylist(
         widget.playlist.isNotEmpty ? widget.playlist : [widget.lesson]);
-    if (!_audio.isActive(widget.lesson.id)) {
-      _audio.playLesson(widget.lesson);
-    }
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      if (!mounted) return;
+      if (widget.startAtMs != null) {
+        await _audio.playLesson(widget.lesson);
+        if (mounted) {
+          await _audio.seek(Duration(milliseconds: widget.startAtMs!));
+        }
+      } else if (!_audio.isActive(widget.lesson.id)) {
+        await _audio.playLesson(widget.lesson);
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _audio.removeListener(_onAudioChanged);
+    super.dispose();
+  }
+
+  void _onAudioChanged() {
+    if (mounted) setState(() {});
   }
 
   Lesson get _current => _audio.currentLesson ?? widget.lesson;
 
-  Subcategory? _subOf(Lesson l) => ContentRepository.instance.subcategoryById(l.subcategoryId);
-  Category? _catOf(Lesson l) => ContentRepository.instance.categoryById(l.categoryId);
+  Subcategory? _subOf(Lesson l) =>
+      ContentRepository.instance.subcategoryById(l.subcategoryId);
+  Category? _catOf(Lesson l) =>
+      ContentRepository.instance.categoryById(l.categoryId);
 
   Future<void> _toggleFavorite(Lesson l) async {
     await LocalStore.toggleFavorite(l.id);
-    setState(() => _favorite = LocalStore.isFavorite(l.id));
+    if (mounted) setState(() {});
   }
 
   Future<void> _download(Lesson l) async {
@@ -94,20 +123,18 @@ class _PlayerScreenState extends State<PlayerScreen> {
     final cat = _catOf(l);
     final sub = _subOf(l);
     final pos = _audio.isActive(l.id) ? _audio.player.position : Duration.zero;
-    var text = lessonShareText(l,
-        categoryName: cat?.name, subName: sub?.name);
+    var text = lessonShareText(
+      l,
+      categoryName: cat?.name,
+      subName: sub?.name,
+      startAtSeconds: pos.inSeconds > 10 ? pos.inSeconds : null,
+    );
     if (pos.inSeconds > 10) {
-      text += '\nمن الدقيقة ${pos.inMinutes}:${(pos.inSeconds % 60).toString().padLeft(2, '0')}';
+      text +=
+          '\nمن الدقيقة ${pos.inMinutes}:${(pos.inSeconds % 60).toString().padLeft(2, '0')}';
     }
-    // إن كان الدرس محمّلاً → نشارك الملف الصوتي نفسه؛ وإلا → نشارك رابطاً
-    // يفتح الدرس داخل التطبيق.
-    final local = DownloadService.localAudioPath(l.id);
-    if (local != null) {
-      await Share.shareXFiles([XFile(local)],
-          text: text, subject: lessonDisplayTitle(l));
-    } else {
-      await Share.share(text, subject: lessonDisplayTitle(l));
-    }
+    // نشارك رابط الدرس فقط حفاظاً على حقوق التسجيل وعدم توزيع الملف الخام.
+    await Share.share(text, subject: lessonDisplayTitle(l));
   }
 
   Future<void> _addToPlaylist(Lesson l) async {
@@ -195,6 +222,178 @@ class _PlayerScreenState extends State<PlayerScreen> {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(m)));
   }
 
+  Future<void> _sendFeedback(Lesson l, String type) async {
+    var note = '';
+    if (type != 'benefited') {
+      final ctrl = TextEditingController();
+      final ok = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title:
+              Text(type == 'audio_issue' ? 'مشكلة في الصوت' : 'إبلاغ عن مشكلة'),
+          content: TextField(
+            controller: ctrl,
+            autofocus: true,
+            maxLines: 3,
+            decoration: const InputDecoration(hintText: 'صف المشكلة (اختياري)'),
+          ),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: const Text('إلغاء')),
+            FilledButton(
+                onPressed: () => Navigator.pop(ctx, true),
+                child: const Text('إرسال')),
+          ],
+        ),
+      );
+      if (ok != true) return;
+      note = ctrl.text.trim();
+    }
+    try {
+      await FirebaseRepo.sendFeedback(l.id, type, note);
+      _snack('شكراً لك — وصلنا تفاعلك.');
+    } catch (_) {
+      _snack('تعذّر إرسال البلاغ. تحقق من الاتصال وحاول مجدداً.');
+    }
+  }
+
+  // ---------------- «اللحظات»: علامات صوتية بتوقيت ----------------
+  Future<void> _addMomentNow(Lesson l) async {
+    final pos = _audio.isActive(l.id) ? _audio.player.position : Duration.zero;
+    final note = await _askMomentNote();
+    if (note == null) return; // ألغى
+    await LocalStore.addBookmark(l.id, pos.inMilliseconds, note);
+    _snack('حُفظت اللحظة عند ${_fmt(pos)}');
+  }
+
+  Future<String?> _askMomentNote() {
+    final ctrl = TextEditingController();
+    return showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('حفظ لحظة'),
+        content: TextField(
+          controller: ctrl,
+          autofocus: true,
+          decoration: const InputDecoration(hintText: 'ملاحظة (اختياري)'),
+          onSubmitted: (v) => Navigator.pop(ctx, v.trim()),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx), child: const Text('إلغاء')),
+          FilledButton(
+              onPressed: () => Navigator.pop(ctx, ctrl.text.trim()),
+              child: const Text('حفظ')),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _shareMoment(Lesson l, int ms) async {
+    final sec = (ms / 1000).round();
+    final title = lessonDisplayTitle(l);
+    final t = _fmt(Duration(milliseconds: ms));
+    await Share.share(
+      'استمع إلى هذه اللحظة من «$title» (من $t):\n'
+      '${lessonShareLink(l, startAtSeconds: sec)}',
+      subject: title,
+    );
+  }
+
+  void _showMoments(Lesson l) {
+    showModalBottomSheet(
+      context: context,
+      showDragHandle: true,
+      isScrollControlled: true,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setSheet) {
+          final moments = LocalStore.getBookmarks(l.id);
+          return SafeArea(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  const Padding(
+                    padding: EdgeInsets.all(8),
+                    child: Text('لحظات هذا الدرس',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                            fontSize: 18, fontWeight: FontWeight.bold)),
+                  ),
+                  FilledButton.tonalIcon(
+                    icon: const Icon(Icons.add_location_alt_outlined),
+                    label: const Text('احفظ اللحظة الحالية'),
+                    onPressed: () async {
+                      await _addMomentNow(l);
+                      setSheet(() {});
+                    },
+                  ),
+                  const SizedBox(height: 8),
+                  if (moments.isEmpty)
+                    const Padding(
+                      padding: EdgeInsets.all(16),
+                      child: Text('لا لحظات محفوظة بعد.',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(color: Colors.grey)),
+                    )
+                  else
+                    Flexible(
+                      child: ListView(
+                        shrinkWrap: true,
+                        children: moments.map((b) {
+                          final ms = b['ms'] as int;
+                          final note = (b['note'] ?? '').toString();
+                          final savedAt = (b['savedAt'] ?? 0) as int;
+                          return ListTile(
+                            leading: const Icon(Icons.play_circle_outline,
+                                color: kTeal),
+                            title: Text(_fmt(Duration(milliseconds: ms))),
+                            subtitle: note.isNotEmpty ? Text(note) : null,
+                            onTap: () {
+                              if (!_audio.isActive(l.id)) {
+                                _audio.playLesson(l).then((_) =>
+                                    _audio.seek(Duration(milliseconds: ms)));
+                              } else {
+                                _audio.seek(Duration(milliseconds: ms));
+                              }
+                              Navigator.pop(ctx);
+                            },
+                            trailing: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                IconButton(
+                                  tooltip: 'مشاركة اللحظة',
+                                  icon: const Icon(Icons.share, color: kTeal),
+                                  onPressed: () => _shareMoment(l, ms),
+                                ),
+                                IconButton(
+                                  tooltip: 'حذف',
+                                  icon: const Icon(Icons.delete_outline,
+                                      color: Colors.red),
+                                  onPressed: () async {
+                                    await LocalStore.removeBookmark(
+                                        l.id, savedAt);
+                                    setSheet(() {});
+                                  },
+                                ),
+                              ],
+                            ),
+                          );
+                        }).toList(),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -202,17 +401,62 @@ class _PlayerScreenState extends State<PlayerScreen> {
         title: const Text('الآن يُشغَّل'),
         actions: [
           IconButton(
+            tooltip: 'اللحظات',
+            icon: const Icon(Icons.bookmark_add_outlined),
+            onPressed: () => _showMoments(_current),
+          ),
+          IconButton(
             tooltip: 'إضافة إلى قائمة',
             icon: const Icon(Icons.playlist_add),
             onPressed: () => _addToPlaylist(_current),
           ),
-          IconButton(
-            tooltip: _favorite ? 'إزالة من المفضّلة' : 'إضافة للمفضّلة',
-            icon: Icon(
-              _favorite ? Icons.favorite : Icons.favorite_border,
-              color: _favorite ? Colors.red : null,
-            ),
-            onPressed: () => _toggleFavorite(_current),
+          Builder(builder: (context) {
+            final fav = LocalStore.isFavorite(_current.id);
+            return IconButton(
+              tooltip: fav ? 'إزالة من المفضّلة' : 'إضافة للمفضّلة',
+              icon: Icon(
+                fav ? Icons.favorite : Icons.favorite_border,
+                color: fav ? Colors.red : null,
+              ),
+              onPressed: () => _toggleFavorite(_current),
+            );
+          }),
+          PopupMenuButton<String>(
+            tooltip: 'تفاعل',
+            icon: const Icon(Icons.more_vert),
+            onSelected: (v) => _sendFeedback(_current, v),
+            itemBuilder: (_) => const [
+              PopupMenuItem(
+                value: 'benefited',
+                child: ListTile(
+                    leading: Icon(Icons.thumb_up_alt_outlined),
+                    title: Text('استفدت من الدرس')),
+              ),
+              PopupMenuItem(
+                value: 'audio_issue',
+                child: ListTile(
+                    leading: Icon(Icons.volume_off),
+                    title: Text('مشكلة في الصوت')),
+              ),
+              PopupMenuItem(
+                value: 'copyright',
+                child: ListTile(
+                    leading: Icon(Icons.copyright_outlined),
+                    title: Text('انتهاك حقوق نشر')),
+              ),
+              PopupMenuItem(
+                value: 'abuse',
+                child: ListTile(
+                    leading: Icon(Icons.gpp_maybe_outlined),
+                    title: Text('محتوى غير مناسب')),
+              ),
+              PopupMenuItem(
+                value: 'other',
+                child: ListTile(
+                    leading: Icon(Icons.report_gmailerrorred),
+                    title: Text('إبلاغ عن هذا الدرس')),
+              ),
+            ],
           ),
         ],
       ),
@@ -253,13 +497,15 @@ class _PlayerScreenState extends State<PlayerScreen> {
               Text(
                 lessonDisplayTitle(l),
                 textAlign: TextAlign.center,
-                style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
+                style:
+                    const TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
               ),
               if (l.speaker.isNotEmpty) ...[
                 const SizedBox(height: 6),
                 Text(l.speaker,
                     textAlign: TextAlign.center,
-                    style: TextStyle(fontSize: 15, color: Colors.grey.shade600)),
+                    style:
+                        TextStyle(fontSize: 15, color: Colors.grey.shade600)),
               ],
               const SizedBox(height: 14),
               _SeekBarLarge(audio: _audio),
@@ -285,7 +531,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
               const Padding(
                 padding: EdgeInsets.symmetric(vertical: 8),
                 child: Text('صوتيات مشابهة',
-                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                    style:
+                        TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
               ),
               if (similar.isEmpty)
                 const Padding(
@@ -394,7 +641,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
                 label: downloaded ? 'تم التحميل' : 'تحميل',
                 button: true,
                 child: IconButton(
-                  tooltip: downloaded ? 'تم التحميل' : 'تحميل للاستماع دون إنترنت',
+                  tooltip:
+                      downloaded ? 'تم التحميل' : 'تحميل للاستماع دون إنترنت',
                   icon: Icon(
                     downloaded ? Icons.download_done : Icons.download_outlined,
                     color: downloaded ? kGreen : kOrange,
@@ -499,7 +747,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
                   );
               Navigator.push(
                 context,
-                MaterialPageRoute(builder: (_) => LessonsScreen(subcategory: s)),
+                MaterialPageRoute(
+                    builder: (_) => LessonsScreen(subcategory: s)),
               );
             },
           ),
@@ -548,9 +797,20 @@ class _PlayerScreenState extends State<PlayerScreen> {
   }
 }
 
-class _SeekBarLarge extends StatelessWidget {
+class _SeekBarLarge extends StatefulWidget {
   final AudioController audio;
   const _SeekBarLarge({required this.audio});
+
+  @override
+  State<_SeekBarLarge> createState() => _SeekBarLargeState();
+}
+
+class _SeekBarLargeState extends State<_SeekBarLarge> {
+  /// موضع السحب المؤقّت — يُعرض أثناء الجرّ ويُنفَّذ seek واحد عند الإفلات
+  /// (seek مع كل حركة كان يسبب تقطيعاً محسوساً في البث على الشبكات الضعيفة).
+  double? _dragMs;
+
+  AudioController get audio => widget.audio;
 
   @override
   Widget build(BuildContext context) {
@@ -561,7 +821,8 @@ class _SeekBarLarge extends StatelessWidget {
         final total = audio.duration;
         final maxMs =
             total.inMilliseconds <= 0 ? 1.0 : total.inMilliseconds.toDouble();
-        final value = pos.inMilliseconds.clamp(0, maxMs.toInt()).toDouble();
+        final shownMs = _dragMs ?? pos.inMilliseconds.toDouble();
+        final value = shownMs.clamp(0.0, maxMs);
         return Column(
           children: [
             SliderTheme(
@@ -571,8 +832,11 @@ class _SeekBarLarge extends StatelessWidget {
                 max: maxMs,
                 value: value,
                 activeColor: kGreen,
-                onChanged: (v) =>
-                    audio.seek(Duration(milliseconds: v.toInt())),
+                onChanged: (v) => setState(() => _dragMs = v),
+                onChangeEnd: (v) {
+                  _dragMs = null;
+                  audio.seek(Duration(milliseconds: v.toInt()));
+                },
               ),
             ),
             Padding(
@@ -580,7 +844,7 @@ class _SeekBarLarge extends StatelessWidget {
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  Text(_fmt(pos),
+                  Text(_fmt(Duration(milliseconds: value.toInt())),
                       style: const TextStyle(fontSize: 12, color: Colors.grey)),
                   Text(_fmt(total),
                       style: const TextStyle(fontSize: 12, color: Colors.grey)),

@@ -173,11 +173,15 @@ class _AudioItemState extends State<AudioItem> {
                       ),
                       if (widget.showActions) ...[
                         Semantics(
-                          label: _favorite ? 'إزالة من المفضّلة' : 'إضافة للمفضّلة',
+                          label: _favorite
+                              ? 'إزالة من المفضّلة'
+                              : 'إضافة للمفضّلة',
                           button: true,
                           child: IconButton(
                             icon: Icon(
-                              _favorite ? Icons.favorite : Icons.favorite_border,
+                              _favorite
+                                  ? Icons.favorite
+                                  : Icons.favorite_border,
                               color: _favorite ? Colors.red : Colors.grey,
                               size: 22,
                             ),

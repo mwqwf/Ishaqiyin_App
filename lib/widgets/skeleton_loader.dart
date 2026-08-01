@@ -68,11 +68,29 @@ class HomeSkeleton extends StatelessWidget {
         SizedBox(height: 16),
         Row(
           children: [
-            SkeletonBox(width: 112, height: 96, borderRadius: BorderRadius.all(Radius.circular(16))),
+            Expanded(
+              child: SkeletonBox(
+                width: double.infinity,
+                height: 96,
+                borderRadius: BorderRadius.all(Radius.circular(16)),
+              ),
+            ),
             SizedBox(width: 10),
-            SkeletonBox(width: 112, height: 96, borderRadius: BorderRadius.all(Radius.circular(16))),
+            Expanded(
+              child: SkeletonBox(
+                width: double.infinity,
+                height: 96,
+                borderRadius: BorderRadius.all(Radius.circular(16)),
+              ),
+            ),
             SizedBox(width: 10),
-            SkeletonBox(width: 112, height: 96, borderRadius: BorderRadius.all(Radius.circular(16))),
+            Expanded(
+              child: SkeletonBox(
+                width: double.infinity,
+                height: 96,
+                borderRadius: BorderRadius.all(Radius.circular(16)),
+              ),
+            ),
           ],
         ),
         SizedBox(height: 24),

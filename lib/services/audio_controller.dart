@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:just_audio_background/just_audio_background.dart';
 import '../models.dart';
@@ -31,6 +32,7 @@ class AudioController extends ChangeNotifier {
 
   bool _loading = false;
   String? _error;
+  bool _notifyPending = false;
 
   String? get currentId => _currentId;
   Lesson? get currentLesson => _current;
@@ -45,7 +47,7 @@ class AudioController extends ChangeNotifier {
   bool get autoplay => _autoplay;
   set autoplay(bool v) {
     _autoplay = v;
-    notifyListeners();
+    _notifySafely();
   }
 
   Stream<Duration> get positionStream => _player.positionStream;
@@ -67,7 +69,7 @@ class AudioController extends ChangeNotifier {
           _playNextInternal(wrap: false);
         }
       }
-      notifyListeners();
+      _notifySafely();
     });
 
     _player.positionStream.listen((pos) {
@@ -75,6 +77,11 @@ class AudioController extends ChangeNotifier {
       if (id == null || pos.inSeconds <= 0) return;
       final now = DateTime.now();
       if (now.difference(_lastPosSave).inSeconds >= 5) {
+        // احتساب زمن الاستماع الفعلي (لـ«حصادك» والهدف الأسبوعي).
+        final elapsed = now.difference(_lastPosSave).inSeconds;
+        if (_player.playing && elapsed > 0 && elapsed <= 30) {
+          LocalStore.addListenSeconds(elapsed);
+        }
         _lastPosSave = now;
         LocalStore.setPosition(id, pos.inMilliseconds);
       }
@@ -86,6 +93,22 @@ class AudioController extends ChangeNotifier {
         LocalStore.setDurationMs(id, d.inMilliseconds);
       }
     });
+  }
+
+  /// يمنع استدعاء setState ضمنياً أثناء مرحلة بناء واجهة المشغّل.
+  void _notifySafely() {
+    final phase = SchedulerBinding.instance.schedulerPhase;
+    if (phase == SchedulerPhase.persistentCallbacks ||
+        phase == SchedulerPhase.midFrameMicrotasks) {
+      if (_notifyPending) return;
+      _notifyPending = true;
+      SchedulerBinding.instance.addPostFrameCallback((_) {
+        _notifyPending = false;
+        if (hasListeners) notifyListeners();
+      });
+      return;
+    }
+    notifyListeners();
   }
 
   void _recordPlay(Lesson lesson) {
@@ -105,7 +128,7 @@ class AudioController extends ChangeNotifier {
 
   void clearError() {
     _error = null;
-    notifyListeners();
+    _notifySafely();
   }
 
   Future<void> toggle(Lesson lesson) async {
@@ -113,9 +136,9 @@ class AudioController extends ChangeNotifier {
       if (_player.playing) {
         await _player.pause();
       } else {
-        await _player.play();
+        unawaited(_player.play());
       }
-      notifyListeners();
+      _notifySafely();
     } else {
       await playLesson(lesson);
     }
@@ -125,43 +148,65 @@ class AudioController extends ChangeNotifier {
     final local = DownloadService.localAudioPath(lesson.id);
     if (local == null && lesson.audioUrl.isEmpty) {
       _error = 'لا يتوفر رابط صوتي لهذا الدرس.';
-      notifyListeners();
+      _notifySafely();
       return;
     }
-    final uri = local != null ? Uri.file(local) : Uri.parse(lesson.audioUrl);
     _error = null;
     _loading = true;
     _currentId = lesson.id;
     _current = lesson;
-    notifyListeners();
+    _notifySafely();
     try {
-      _recordPlay(lesson);
-      await _player.setAudioSource(
-        AudioSource.uri(
-          uri,
-          tag: MediaItem(
-            id: lesson.id,
-            title: lessonDisplayTitle(lesson),
-            album: 'منبر ادكصهك',
-          ),
-        ),
-      );
+      try {
+        await _setLessonSource(
+          lesson,
+          local != null ? Uri.file(local) : Uri.parse(lesson.audioUrl),
+        );
+      } catch (localError) {
+        // إن تلف الملف المحلي نحذفه ونعود للبث بدلاً من تعطيل الدرس كلياً.
+        if (local == null || lesson.audioUrl.isEmpty) rethrow;
+        debugPrint('Local audio failed, falling back to network: $localError');
+        try {
+          await DownloadService.deleteDownload(lesson.id);
+        } catch (_) {}
+        await _setLessonSource(lesson, Uri.parse(lesson.audioUrl));
+      }
       await _player.setSpeed(_speed);
       final saved = LocalStore.getPosition(lesson.id);
       if (saved > 3000) {
         await _player.seek(Duration(milliseconds: saved));
       }
-      await _player.play();
+      // Future الخاص بـ just_audio لا يكتمل إلا عند انتهاء/إيقاف المقطع؛
+      // لذلك نبدأ التشغيل دون جعل الواجهة تنتظر نهاية الدرس.
+      unawaited(_player.play().catchError((Object e, StackTrace st) {
+        _error = 'توقّف تشغيل الدرس. حاول مجدداً أو تحقق من الاتصال.';
+        debugPrint('Async playback error: $e');
+        _notifySafely();
+      }));
+      _recordPlay(lesson);
       _loading = false;
-      notifyListeners();
+      _notifySafely();
     } catch (e) {
       _loading = false;
       _currentId = null;
       _current = null;
       _error = 'تعذّر تشغيل الدرس. تحقّق من الاتصال بالإنترنت.';
       debugPrint('playLesson error: $e');
-      notifyListeners();
+      _notifySafely();
     }
+  }
+
+  Future<void> _setLessonSource(Lesson lesson, Uri uri) async {
+    await _player.setAudioSource(
+      AudioSource.uri(
+        uri,
+        tag: MediaItem(
+          id: lesson.id,
+          title: lessonDisplayTitle(lesson),
+          album: 'منبر ادكصهك',
+        ),
+      ),
+    );
   }
 
   Future<void> playNext() => _playNextInternal(wrap: true);
@@ -174,7 +219,7 @@ class AudioController extends ChangeNotifier {
       if (!wrap) {
         await _player.pause();
         await _player.seek(Duration.zero);
-        notifyListeners();
+        _notifySafely();
         return;
       }
     }
@@ -221,13 +266,13 @@ class AudioController extends ChangeNotifier {
     if (_player.playing || _currentId != null) {
       await _player.setSpeed(_speed);
     }
-    notifyListeners();
+    _notifySafely();
   }
 
   Future<void> setSkipSeconds(int sec) async {
     _skipSeconds = sec;
     await LocalStore.setSkipSeconds(sec);
-    notifyListeners();
+    _notifySafely();
   }
 
   void setSleepTimer(Duration? duration) {
@@ -239,10 +284,10 @@ class AudioController extends ChangeNotifier {
       _sleepTimer = Timer(duration, () async {
         await pause();
         _sleepEndsAt = null;
-        notifyListeners();
+        _notifySafely();
       });
     }
-    notifyListeners();
+    _notifySafely();
   }
 
   void cancelSleepTimer() => setSleepTimer(null);

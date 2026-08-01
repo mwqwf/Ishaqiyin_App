@@ -18,16 +18,21 @@ String lessonDisplayTitle(Lesson l) {
   return t.isNotEmpty ? t : 'درس صوتي';
 }
 
-String lessonShareLink(Lesson l) =>
-    'https://menbar.app/lesson/${l.id}';
+String lessonShareLink(Lesson l, {int? startAtSeconds}) {
+  final base = 'https://minbar-adkassahk.vercel.app/lesson/${l.id}';
+  return startAtSeconds != null && startAtSeconds > 0
+      ? '$base?t=$startAtSeconds'
+      : base;
+}
 
-String lessonShareText(Lesson l, {String? categoryName, String? subName}) {
+String lessonShareText(Lesson l,
+    {String? categoryName, String? subName, int? startAtSeconds}) {
   final title = lessonDisplayTitle(l);
   final parts = <String>[title];
   if (subName != null && subName.isNotEmpty) parts.add('القسم: $subName');
   if (categoryName != null && categoryName.isNotEmpty) {
     parts.add('($categoryName)');
   }
-  parts.add(lessonShareLink(l));
+  parts.add(lessonShareLink(l, startAtSeconds: startAtSeconds));
   return parts.join('\n');
 }

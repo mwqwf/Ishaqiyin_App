@@ -18,7 +18,8 @@ DateTime _parseDate(dynamic v) {
     return DateTime.tryParse(v) ?? DateTime.fromMillisecondsSinceEpoch(0);
   }
   if (v is Map && v['seconds'] != null) {
-    return DateTime.fromMillisecondsSinceEpoch((v['seconds'] as num).toInt() * 1000);
+    return DateTime.fromMillisecondsSinceEpoch(
+        (v['seconds'] as num).toInt() * 1000);
   }
   return DateTime.fromMillisecondsSinceEpoch(0);
 }
@@ -109,6 +110,10 @@ class Lesson {
   final String speaker;
   final String description;
   final int durationMs;
+  final bool featured;
+
+  /// Scheduled publish time; if in the future the lesson is hidden from users.
+  final DateTime? publishAt;
 
   Lesson({
     required this.id,
@@ -121,6 +126,8 @@ class Lesson {
     this.speaker = '',
     this.description = '',
     this.durationMs = 0,
+    this.featured = false,
+    this.publishAt,
   });
 
   static String _extractSubcategoryId(Map<String, dynamic> d) {
@@ -145,6 +152,8 @@ class Lesson {
       speaker: _str(d['speaker'] ?? d['sheikh'] ?? d['reader']),
       description: _str(d['description']),
       durationMs: _int(d['durationMs'] ?? d['duration']),
+      featured: d['featured'] == true,
+      publishAt: d['publishAt'] == null ? null : _parseDate(d['publishAt']),
     );
   }
 
@@ -159,6 +168,8 @@ class Lesson {
         'speaker': speaker,
         'description': description,
         'durationMs': durationMs,
+        'featured': featured,
+        if (publishAt != null) 'publishAt': publishAt!.toIso8601String(),
       };
 
   factory Lesson.fromCache(Map<String, dynamic> m) =>

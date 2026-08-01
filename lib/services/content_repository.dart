@@ -14,6 +14,7 @@ class ContentRepository extends ChangeNotifier {
   List<Lesson> lessons = [];
   bool loading = true;
   bool syncing = false;
+  Future<void>? _refreshing;
 
   List<Lesson> newestTop = [];
   List<Lesson> mostListened = [];
@@ -21,6 +22,10 @@ class ContentRepository extends ChangeNotifier {
   List<Lesson> feed = [];
   List<Lesson> continueSection = [];
   List<Lesson> randomToday = [];
+  List<Lesson> trending = [];
+  List<Lesson> unfinished = [];
+  List<Lesson> featured = [];
+  Lesson? dailyWard;
 
   void loadFromCache() {
     categories = LocalStore.getCategories();
@@ -32,6 +37,18 @@ class ContentRepository extends ChangeNotifier {
   }
 
   Future<void> refresh({bool force = false}) async {
+    final active = _refreshing;
+    if (active != null) return active;
+    final operation = _performRefresh(force: force);
+    _refreshing = operation;
+    try {
+      await operation;
+    } finally {
+      if (identical(_refreshing, operation)) _refreshing = null;
+    }
+  }
+
+  Future<void> _performRefresh({required bool force}) async {
     syncing = true;
     notifyListeners();
     try {
@@ -55,6 +72,10 @@ class ContentRepository extends ChangeNotifier {
     feed = FirebaseRepo.recommendedFeed(lessons, limit: 50);
     continueSection = FirebaseRepo.continueSection(lessons);
     randomToday = FirebaseRepo.randomSectionToday(lessons);
+    trending = FirebaseRepo.trendingThisWeek(lessons, limit: 15);
+    unfinished = FirebaseRepo.unfinished(lessons);
+    featured = FirebaseRepo.featured(lessons);
+    dailyWard = FirebaseRepo.dailyWard(lessons);
   }
 
   Lesson? lessonById(String id) {

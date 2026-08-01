@@ -34,7 +34,10 @@ Future<String?> askPlaylistName(BuildContext context,
 }
 
 class PlaylistsScreen extends StatefulWidget {
-  const PlaylistsScreen({super.key});
+  /// عند [embedded] لا يُعرض شريط علوي (تُستخدم داخل تبويب صفحة «قوائمي»)،
+  /// مع الإبقاء على زر إنشاء القائمة العائم.
+  final bool embedded;
+  const PlaylistsScreen({super.key, this.embedded = false});
 
   @override
   State<PlaylistsScreen> createState() => _PlaylistsScreenState();
@@ -47,9 +50,19 @@ class _PlaylistsScreenState extends State<PlaylistsScreen> {
   void initState() {
     super.initState();
     _load();
+    LocalStore.libraryRevision.addListener(_load);
   }
 
-  void _load() => setState(() => _playlists = LocalStore.getPlaylists());
+  void _load() {
+    if (!mounted) return;
+    setState(() => _playlists = LocalStore.getPlaylists());
+  }
+
+  @override
+  void dispose() {
+    LocalStore.libraryRevision.removeListener(_load);
+    super.dispose();
+  }
 
   Future<void> _create() async {
     final name = await askPlaylistName(context);
@@ -83,7 +96,8 @@ class _PlaylistsScreenState extends State<PlaylistsScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('قوائم التشغيل')),
+      appBar:
+          widget.embedded ? null : AppBar(title: const Text('قوائم التشغيل')),
       floatingActionButton: FloatingActionButton.extended(
         onPressed: _create,
         icon: const Icon(Icons.add),
@@ -153,6 +167,8 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
     super.initState();
     _p = widget.playlist;
     _reload();
+    LocalStore.libraryRevision.addListener(_reload);
+    ContentRepository.instance.addListener(_reload);
   }
 
   void _reload() {
@@ -161,13 +177,19 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
       orElse: () => widget.playlist,
     );
     final repo = ContentRepository.instance;
+    if (!mounted) return;
     setState(() {
       _p = fresh;
-      _lessons = fresh.lessonIds
-          .map(repo.lessonById)
-          .whereType<Lesson>()
-          .toList();
+      _lessons =
+          fresh.lessonIds.map(repo.lessonById).whereType<Lesson>().toList();
     });
+  }
+
+  @override
+  void dispose() {
+    LocalStore.libraryRevision.removeListener(_reload);
+    ContentRepository.instance.removeListener(_reload);
+    super.dispose();
   }
 
   Future<void> _remove(Lesson l) async {

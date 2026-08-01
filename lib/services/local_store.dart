@@ -1,10 +1,16 @@
 import 'dart:convert';
+import 'package:flutter/foundation.dart' show ValueNotifier;
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models.dart';
 
 /// Lightweight local cache + settings, backed by SharedPreferences.
 class LocalStore {
   static late SharedPreferences _p;
+
+  /// إشارة موحّدة لتحديث شاشات المكتبة عند تغيّر بياناتها على الجهاز.
+  static final ValueNotifier<int> libraryRevision = ValueNotifier<int>(0);
+
+  static void _notifyLibrary() => libraryRevision.value++;
 
   static Future<void> init() async {
     _p = await SharedPreferences.getInstance();
@@ -69,11 +75,13 @@ class LocalStore {
   static Future<void> setAudioDownload(String id, String path) async {
     final m = getAudioDownloads()..[id] = path;
     await _setMap('downloads_audio', m);
+    _notifyLibrary();
   }
 
   static Future<void> removeAudioDownload(String id) async {
     final m = getAudioDownloads()..remove(id);
     await _setMap('downloads_audio', m);
+    _notifyLibrary();
   }
 
   // ---------------- generic int map / string list ----------------
@@ -121,6 +129,7 @@ class LocalStore {
     list.insert(0, id);
     if (list.length > 60) list.removeRange(60, list.length);
     await _setStringList('pers_recent_played', list);
+    _notifyLibrary();
   }
 
   static Map<String, int> getCategoryVisits() => _getIntMap('pers_cat_visits');
@@ -198,6 +207,7 @@ class LocalStore {
       list.insert(0, id);
     }
     await _setStringList('pers_favorites', list);
+    _notifyLibrary();
   }
 
   // ---------------- search history ----------------
@@ -210,6 +220,7 @@ class LocalStore {
     if (list.length > 20) list.removeRange(20, list.length);
     await _setStringList('pers_search_hist', list);
   }
+
   static Future<void> clearSearchHistory() async =>
       _p.remove('pers_search_hist');
 
@@ -229,8 +240,11 @@ class LocalStore {
     return [];
   }
 
-  static Future<void> _savePlaylists(List<Playlist> v) =>
-      _p.setString('pers_playlists', jsonEncode(v.map((e) => e.toJson()).toList()));
+  static Future<void> _savePlaylists(List<Playlist> v) async {
+    await _p.setString(
+        'pers_playlists', jsonEncode(v.map((e) => e.toJson()).toList()));
+    _notifyLibrary();
+  }
 
   static Future<Playlist> createPlaylist(String name) async {
     final list = getPlaylists();
@@ -287,10 +301,13 @@ class LocalStore {
     if (last == today) return;
     var streak = getStreakDays();
     if (last != null) {
-      final lastDate = DateTime.tryParse(last.replaceAll('-', '/'));
-      final todayDate = DateTime.now();
+      final lastDate = DateTime.tryParse(last);
+      final now = DateTime.now();
+      final todayDate = DateTime(now.year, now.month, now.day);
       if (lastDate != null) {
-        final diff = todayDate.difference(lastDate).inDays;
+        final normalizedLast =
+            DateTime(lastDate.year, lastDate.month, lastDate.day);
+        final diff = todayDate.difference(normalizedLast).inDays;
         streak = diff == 1 ? streak + 1 : 1;
       } else {
         streak = 1;
@@ -357,6 +374,11 @@ class LocalStore {
   static Future<void> setLastSeenNotifMs(int v) =>
       _p.setInt('notif_last_seen_ms', v);
 
+  /// آخر زيارة لشاشة «مساهماتي» — لنقطة زرّها في الشريط العلوي.
+  static int getMySubsSeenMs() => _p.getInt('my_subs_seen_ms') ?? 0;
+  static Future<void> setMySubsSeenMs(int v) =>
+      _p.setInt('my_subs_seen_ms', v);
+
   /// تفعيل/إيقاف الإشعارات (افتراضياً مُفعّلة).
   static bool getNotificationsEnabled() => _p.getBool('notif_enabled') ?? true;
   static Future<void> setNotificationsEnabled(bool v) =>
@@ -374,5 +396,193 @@ class LocalStore {
       if (list.length > 500) list.removeRange(0, list.length - 500);
       await _setStringList('notif_dismissed', list);
     }
+  }
+
+  // ==================================================================
+  //  ميزات التفاعل (تقرير 2026-07) — كلها محلية على الجهاز
+  // ==================================================================
+
+  // ---------------- «اللحظات» (علامات صوتية مع ملاحظة) ----------------
+  /// خريطة: معرّف الدرس → قائمة لحظات [{ms, note}].
+  static Map<String, List<Map<String, dynamic>>> _getBookmarks() {
+    final s = _p.getString('pers_bookmarks');
+    if (s == null) return {};
+    try {
+      final d = jsonDecode(s);
+      if (d is Map) {
+        return d.map((k, v) => MapEntry(
+              k.toString(),
+              (v is List)
+                  ? v
+                      .whereType<Map>()
+                      .map((e) => Map<String, dynamic>.from(e))
+                      .toList()
+                  : <Map<String, dynamic>>[],
+            ));
+      }
+    } catch (_) {}
+    return {};
+  }
+
+  static Future<void> _saveBookmarks(
+          Map<String, List<Map<String, dynamic>>> m) =>
+      _p.setString('pers_bookmarks', jsonEncode(m));
+
+  static List<Map<String, dynamic>> getBookmarks(String lessonId) =>
+      _getBookmarks()[lessonId] ?? [];
+
+  /// كل اللحظات المحفوظة عبر كل الدروس: [{lessonId, ms, note}] مرتّبة بالأحدث.
+  static List<Map<String, dynamic>> getAllBookmarks() {
+    final all = <Map<String, dynamic>>[];
+    _getBookmarks().forEach((lessonId, list) {
+      for (final b in list) {
+        all.add({'lessonId': lessonId, ...b});
+      }
+    });
+    all.sort((a, b) => (b['savedAt'] ?? 0).compareTo(a['savedAt'] ?? 0));
+    return all;
+  }
+
+  static int getBookmarkCount() {
+    var n = 0;
+    _getBookmarks().forEach((_, v) => n += v.length);
+    return n;
+  }
+
+  static Future<void> addBookmark(String lessonId, int ms, String note) async {
+    if (lessonId.isEmpty) return;
+    final m = _getBookmarks();
+    final list = m[lessonId] ?? [];
+    list.add({
+      'ms': ms,
+      'note': note.trim(),
+      'savedAt': DateTime.now().millisecondsSinceEpoch,
+    });
+    list.sort((a, b) => (a['ms'] as int).compareTo(b['ms'] as int));
+    m[lessonId] = list;
+    await _saveBookmarks(m);
+  }
+
+  static Future<void> removeBookmark(String lessonId, int savedAt) async {
+    final m = _getBookmarks();
+    final list = m[lessonId];
+    if (list == null) return;
+    list.removeWhere((b) => (b['savedAt'] ?? 0) == savedAt);
+    if (list.isEmpty) {
+      m.remove(lessonId);
+    } else {
+      m[lessonId] = list;
+    }
+    await _saveBookmarks(m);
+  }
+
+  // ---------------- متابعة الأقسام (إشعارات مخصّصة) ----------------
+  static List<String> getFollowedSubs() => _getStringList('pers_followed_subs');
+  static bool isFollowingSub(String subId) => getFollowedSubs().contains(subId);
+  static Future<void> toggleFollowSub(String subId) async {
+    if (subId.isEmpty) return;
+    final list = getFollowedSubs();
+    if (list.contains(subId)) {
+      list.remove(subId);
+    } else {
+      list.add(subId);
+    }
+    await _setStringList('pers_followed_subs', list);
+  }
+
+  // ---------------- الوِرد اليومي ----------------
+  /// ساعة التسليم (0-23)، أو -1 إن كان الوِرد موقوفاً (الافتراضي موقوف).
+  static int getWardHour() => _p.getInt('ward_hour') ?? -1;
+  static int getWardMinute() => _p.getInt('ward_minute') ?? 0;
+  static bool getWardEnabled() => getWardHour() >= 0;
+  static Future<void> setWardTime(int hour, int minute) async {
+    await _p.setInt('ward_hour', hour);
+    await _p.setInt('ward_minute', minute);
+  }
+
+  static Future<void> disableWard() => _p.setInt('ward_hour', -1);
+
+  static String? getWardLastDate() => _p.getString('ward_last_date');
+  static Future<void> setWardDelivered() =>
+      _p.setString('ward_last_date', _todayKey());
+  static bool get wardDeliveredToday => getWardLastDate() == _todayKey();
+
+  // ---------------- إحصاء وقت الاستماع (لـ«حصادك» والهدف) ----------------
+  /// خريطة: يوم (YYYY-M-D) → إجمالي ثواني الاستماع.
+  static Map<String, int> getDailySeconds() => _getIntMap('stat_daily_seconds');
+
+  static Future<void> addListenSeconds(int seconds) async {
+    if (seconds <= 0) return;
+    final m = getDailySeconds();
+    final k = _todayKey();
+    m[k] = (m[k] ?? 0) + seconds;
+    // احتفظ بآخر 120 يوماً فقط.
+    if (m.length > 120) {
+      final keys = m.keys.toList();
+      for (final key in keys.take(m.length - 120)) {
+        m.remove(key);
+      }
+    }
+    await _setIntMap('stat_daily_seconds', m);
+  }
+
+  static int getTodaySeconds() => getDailySeconds()[_todayKey()] ?? 0;
+
+  static int getTotalSeconds() {
+    var t = 0;
+    getDailySeconds().forEach((_, v) => t += v);
+    return t;
+  }
+
+  /// إجمالي ثواني الاستماع خلال آخر 7 أيام (يشمل اليوم).
+  static int getWeekSeconds() {
+    final m = getDailySeconds();
+    final now = DateTime.now();
+    var t = 0;
+    for (var i = 0; i < 7; i++) {
+      final d = now.subtract(Duration(days: i));
+      t += m['${d.year}-${d.month}-${d.day}'] ?? 0;
+    }
+    return t;
+  }
+
+  // ---------------- الهدف الأسبوعي (بالدقائق، 0 = موقوف) ----------------
+  static int getWeeklyGoalMinutes() => _p.getInt('goal_weekly_min') ?? 0;
+  static Future<void> setWeeklyGoalMinutes(int v) =>
+      _p.setInt('goal_weekly_min', v < 0 ? 0 : v);
+
+  /// يمحو بيانات المستخدم المحلية دون حذف مكتبة المحتوى العامة المؤقتة.
+  static Future<void> clearPersonalData() async {
+    const exactKeys = <String>{
+      'downloads_audio',
+      'pers_play_counts',
+      'pers_recent_played',
+      'pers_cat_visits',
+      'pers_sub_visits',
+      'pers_positions',
+      'pers_completed',
+      'pers_durations',
+      'pers_view_counted',
+      'pers_favorites',
+      'pers_search_hist',
+      'pers_playlists',
+      'pers_streak_days',
+      'pers_last_listen_date',
+      'pers_bookmarks',
+      'pers_followed_subs',
+      'stat_daily_seconds',
+      'analytics_event_counts',
+      'notif_last_seen_ms',
+      'notif_dismissed',
+      'my_subs_seen_ms',
+      'ward_last_date',
+      'goal_weekly_min',
+      'submission_known_statuses_v1',
+      'submitter_name_v1',
+    };
+    for (final key in exactKeys) {
+      await _p.remove(key);
+    }
+    _notifyLibrary();
   }
 }

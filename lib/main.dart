@@ -3,6 +3,8 @@ import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:provider/provider.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
+import 'package:firebase_app_check/firebase_app_check.dart';
+import 'package:flutter/foundation.dart';
 import 'package:just_audio_background/just_audio_background.dart';
 
 import 'firebase_options.dart';
@@ -11,6 +13,7 @@ import 'services/content_repository.dart';
 import 'services/deep_link_service.dart';
 import 'services/local_store.dart';
 import 'services/notification_service.dart';
+import 'services/submission_service.dart';
 import 'state/app_state.dart';
 import 'theme.dart';
 import 'screens/root_shell.dart';
@@ -37,9 +40,21 @@ Future<void> main() async {
     await Firebase.initializeApp(
       options: DefaultFirebaseOptions.currentPlatform,
     );
+    try {
+      await FirebaseAppCheck.instance.activate(
+        androidProvider:
+            kDebugMode ? AndroidProvider.debug : AndroidProvider.playIntegrity,
+      );
+    } catch (e) {
+      debugPrint('Firebase App Check init failed: $e');
+    }
     FirebaseMessaging.onBackgroundMessage(firebaseMessagingBackgroundHandler);
     // ignore: discarded_futures
     NotificationService.initPush();
+    // مراقب نتائج «شارك درساً»: يعمل فقط لمن سبق أن ساهم (لديه هوية).
+    if (SubmissionService.hasIdentity) {
+      SubmissionService.startDecisionWatcher();
+    }
   } catch (e) {
     debugPrint('Firebase init error: $e');
   }
@@ -47,9 +62,11 @@ Future<void> main() async {
   final appState = AppState()..load();
   ContentRepository.instance.loadFromCache();
   // ignore: discarded_futures
-  ContentRepository.instance.refresh().then((_) {
+  ContentRepository.instance.refresh(force: true).then((_) {
     AutoDownloadService.runIfEnabled();
     NotificationService.scheduleContinueReminder();
+    NotificationService.maybeDeliverDailyWard();
+    NotificationService.syncFollowedSubs();
   });
 
   runApp(MyApp(appState: appState));
@@ -97,9 +114,15 @@ class _MyAppState extends State<MyApp> {
               GlobalCupertinoLocalizations.delegate,
             ],
             builder: (context, child) {
-              return Directionality(
-                textDirection: TextDirection.rtl,
-                child: child!,
+              final media = MediaQuery.of(context);
+              return MediaQuery(
+                data: media.copyWith(
+                  textScaler: TextScaler.linear(state.fontScale),
+                ),
+                child: Directionality(
+                  textDirection: TextDirection.rtl,
+                  child: child!,
+                ),
               );
             },
             home: const RootShell(),

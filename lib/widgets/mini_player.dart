@@ -28,9 +28,8 @@ class MiniPlayer extends StatelessWidget {
                 MaterialPageRoute(
                   builder: (_) => PlayerScreen(
                     lesson: lesson,
-                    playlist: audio.playlist.isNotEmpty
-                        ? audio.playlist
-                        : [lesson],
+                    playlist:
+                        audio.playlist.isNotEmpty ? audio.playlist : [lesson],
                   ),
                 ),
               ),
@@ -40,8 +39,8 @@ class MiniPlayer extends StatelessWidget {
                   if (audio.isLoading)
                     const LinearProgressIndicator(minHeight: 2, color: kTeal),
                   Padding(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 12, vertical: 8),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                     child: Row(
                       children: [
                         Container(

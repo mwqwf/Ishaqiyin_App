@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import '../models.dart';
 import '../services/content_repository.dart';
 import '../services/firebase_repo.dart';
+import '../services/local_store.dart';
 import '../widgets/audio_item.dart';
 
 class FavoritesScreen extends StatefulWidget {
@@ -18,13 +19,23 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
   void initState() {
     super.initState();
     _load();
+    ContentRepository.instance.addListener(_load);
+    LocalStore.libraryRevision.addListener(_load);
   }
 
   void _load() {
     final lessons = ContentRepository.instance.lessons;
+    if (!mounted) return;
     setState(() {
       _items = FirebaseRepo.favorites(lessons);
     });
+  }
+
+  @override
+  void dispose() {
+    ContentRepository.instance.removeListener(_load);
+    LocalStore.libraryRevision.removeListener(_load);
+    super.dispose();
   }
 
   @override

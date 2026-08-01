@@ -1,20 +1,26 @@
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
 import '../models.dart';
 import '../services/audio_controller.dart';
 import '../services/content_repository.dart';
 import '../services/local_store.dart';
+import '../services/submission_service.dart';
 import '../theme.dart';
 import '../utils/category_colors.dart';
 import '../utils/lesson_display.dart';
 import '../widgets/audio_item.dart';
 import '../widgets/mini_player.dart';
 import '../widgets/skeleton_loader.dart';
+import 'car_mode_screen.dart';
+import 'my_submissions_screen.dart';
 import 'notifications_screen.dart';
 import 'player_screen.dart';
+import 'radio_screen.dart';
 import 'search_delegate.dart';
 import 'settings_screen.dart';
 import 'subcategories_screen.dart';
+import 'wrapped_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   /// المشغّل المصغّر يُعرض من الهيكل الرئيسي (RootShell) فلا نكرّره هنا.
@@ -32,8 +38,6 @@ class _HomeScreenState extends State<HomeScreen> {
   void initState() {
     super.initState();
     _repo.addListener(_onRepo);
-    _repo.loadFromCache();
-    _repo.refresh();
   }
 
   @override
@@ -69,6 +73,7 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
             ),
           const NotificationBell(),
+          const _MySubmissionsButton(),
           IconButton(
             icon: const Icon(Icons.search),
             tooltip: 'بحث',
@@ -109,13 +114,20 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget _homeList() {
     return ListView(
       children: [
+        _quickActions(),
+        if (_repo.dailyWard != null) _dailyWardCard(_repo.dailyWard!),
+        if (_repo.featured.isNotEmpty)
+          _audioRail('مختارات المنبر ⭐', _repo.featured),
         if (_repo.categories.isNotEmpty) _sectionsRail(),
         if (_repo.continueList.isNotEmpty)
           _audioRail('تابع الاستماع', _repo.continueList, showProgress: true),
+        if (_repo.unfinished.isNotEmpty)
+          _audioRail('لم تُكمله بعد', _repo.unfinished, showProgress: true),
+        if (_repo.trending.isNotEmpty)
+          _audioRail('الأكثر استماعاً هذا الأسبوع 🔥', _repo.trending),
         if (_repo.mostListened.isNotEmpty)
           _audioRail('الأكثر استماعاً', _repo.mostListened),
-        if (_repo.newestTop.isNotEmpty)
-          _audioRail('الأحدث', _repo.newestTop),
+        if (_repo.newestTop.isNotEmpty) _audioRail('الأحدث', _repo.newestTop),
         if (_repo.continueSection.isNotEmpty)
           _audioRail('استكمل قسمك', _repo.continueSection),
         if (_repo.randomToday.isNotEmpty)
@@ -125,6 +137,86 @@ class _HomeScreenState extends State<HomeScreen> {
             AudioItem(lesson: l, playlist: _repo.feed, showActions: false)),
         const SizedBox(height: 16),
       ],
+    );
+  }
+
+  Widget _quickActions() {
+    Widget chip(IconData icon, String label, Color color, VoidCallback onTap) {
+      return Padding(
+        padding: const EdgeInsets.only(left: 8),
+        child: ActionChip(
+          avatar: Icon(icon, color: color, size: 20),
+          label: Text(label),
+          onPressed: onTap,
+        ),
+      );
+    }
+
+    return SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      padding: const EdgeInsets.fromLTRB(12, 12, 12, 4),
+      child: Row(
+        children: [
+          chip(Icons.radio, 'إذاعة منبر', kTeal,
+              () => _push(const RadioScreen())),
+          chip(Icons.directions_car, 'وضع القيادة', kBlue,
+              () => _push(const CarModeScreen())),
+          chip(Icons.insights, 'حصادك', kOrange,
+              () => _push(const WrappedScreen())),
+        ],
+      ),
+    );
+  }
+
+  void _push(Widget screen) =>
+      Navigator.push(context, MaterialPageRoute(builder: (_) => screen));
+
+  Widget _dailyWardCard(Lesson l) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 10, 12, 2),
+      child: Card(
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          onTap: () => _openPlayer(l, [l, ..._repo.feed]),
+          child: Container(
+            padding: const EdgeInsets.all(14),
+            decoration: const BoxDecoration(
+              gradient: LinearGradient(
+                colors: [kTeal, kSlate],
+                begin: Alignment.centerRight,
+                end: Alignment.centerLeft,
+              ),
+            ),
+            child: Row(
+              children: [
+                const Icon(Icons.wb_sunny_outlined,
+                    color: Colors.white, size: 34),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text('وِرد اليوم',
+                          style:
+                              TextStyle(color: Colors.white70, fontSize: 13)),
+                      const SizedBox(height: 2),
+                      Text(lessonDisplayTitle(l),
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 16,
+                              fontWeight: FontWeight.bold)),
+                    ],
+                  ),
+                ),
+                const Icon(Icons.play_circle_fill,
+                    color: Colors.white, size: 40),
+              ],
+            ),
+          ),
+        ),
+      ),
     );
   }
 
@@ -140,7 +232,7 @@ class _HomeScreenState extends State<HomeScreen> {
       children: [
         _railHeader('تصفّح الأقسام'),
         SizedBox(
-          height: 104,
+          height: 120,
           child: ListView.builder(
             scrollDirection: Axis.horizontal,
             padding: const EdgeInsets.symmetric(horizontal: 12),
@@ -236,6 +328,53 @@ class _HomeScreenState extends State<HomeScreen> {
       );
 }
 
+/// زر «مساهماتي» بجوار الجرس — يظهر لمن لديه هوية مساهمات فقط،
+/// وعليه نقطة إذا حُسمت مساهمة بعد آخر زيارة للشاشة.
+class _MySubmissionsButton extends StatefulWidget {
+  const _MySubmissionsButton();
+
+  @override
+  State<_MySubmissionsButton> createState() => _MySubmissionsButtonState();
+}
+
+class _MySubmissionsButtonState extends State<_MySubmissionsButton> {
+  Future<void> _open() async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => const MySubmissionsScreen()),
+    );
+    // بعد العودة تكون لحظة الاطلاع قد تحدّثت — أعد البناء لإطفاء النقطة.
+    if (mounted) setState(() {});
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder<User?>(
+      stream: FirebaseAuth.instance.authStateChanges(),
+      initialData: FirebaseAuth.instance.currentUser,
+      builder: (context, authSnap) {
+        if (authSnap.data == null) return const SizedBox.shrink();
+        return StreamBuilder<List<LessonSubmission>>(
+          stream: SubmissionService.watchMine(),
+          builder: (context, snap) {
+            final items = snap.data ?? const <LessonSubmission>[];
+            final seen = LocalStore.getMySubsSeenMs();
+            final hasNewDecision = items.any(
+                (s) => s.status != 'pending' && s.decidedAtMs > seen);
+            final button = IconButton(
+              icon: const Icon(Icons.outbox_outlined),
+              tooltip: 'مساهماتي',
+              onPressed: _open,
+            );
+            if (!hasNewDecision) return button;
+            return Badge(smallSize: 8, child: button);
+          },
+        );
+      },
+    );
+  }
+}
+
 class _AudioCard extends StatelessWidget {
   final Lesson lesson;
   final VoidCallback onTap;
@@ -254,12 +393,6 @@ class _AudioCard extends StatelessWidget {
         ? lesson.durationMs
         : LocalStore.getDurationMs(lesson.id);
     final progress = showProgress ? audio.progressFor(lesson.id) : 0.0;
-    if (progress == 0 && showProgress) {
-      final saved = LocalStore.getPosition(lesson.id);
-      if (saved > 0 && durMs > 0) {
-        // use saved position when not currently playing
-      }
-    }
     final savedProgress = durMs > 0
         ? (LocalStore.getPosition(lesson.id) / durMs).clamp(0.0, 1.0)
         : 0.0;

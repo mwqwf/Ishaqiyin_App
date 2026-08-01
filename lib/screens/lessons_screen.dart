@@ -85,16 +85,27 @@ class _LessonsScreenState extends State<LessonsScreen> {
       _dlDone = 0;
       _dlTotal = pending.length;
     });
+    var succeeded = 0;
+    var failed = 0;
     for (final l in pending) {
       try {
         await DownloadService.downloadAudio(l.id, l.audioUrl);
-      } catch (_) {}
+        succeeded++;
+      } catch (_) {
+        failed++;
+      }
       if (!mounted) return;
       setState(() => _dlDone++);
     }
     if (mounted) {
       setState(() => _bulkDl = false);
-      _snack('تم تحميل $_dlTotal درساً للاستماع دون إنترنت.');
+      if (failed == 0) {
+        _snack('تم تحميل $succeeded درساً للاستماع دون إنترنت.');
+      } else if (succeeded == 0) {
+        _snack('تعذّر تحميل الدروس. تحقق من الاتصال وحاول مجدداً.');
+      } else {
+        _snack('تم تحميل $succeeded، وتعذّر تحميل $failed درساً.');
+      }
     }
   }
 

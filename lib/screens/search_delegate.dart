@@ -94,19 +94,21 @@ class ContentSearchDelegate extends SearchDelegate<String?> {
     final q = query.trim();
     if (q.isEmpty) return const SizedBox.shrink();
 
-    final catRes =
-        categories.where((c) => arabicContains(c.name, q)).toList();
+    final catRes = categories.where((c) => arabicContains(c.name, q)).toList();
     final subRes =
         subcategories.where((s) => arabicContains(s.name, q)).toList();
-    final lesRes = lessons.where((l) {
-      if (arabicContains(l.title, q)) return true;
-      if (l.speaker.isNotEmpty && arabicContains(l.speaker, q)) return true;
-      final cat = categories.where((c) => c.id == l.categoryId);
-      if (cat.isNotEmpty && arabicContains(cat.first.name, q)) return true;
-      final sub = subcategories.where((s) => s.id == l.subcategoryId);
-      if (sub.isNotEmpty && arabicContains(sub.first.name, q)) return true;
-      return false;
-    }).take(80).toList();
+    final lesRes = lessons
+        .where((l) {
+          if (arabicContains(l.title, q)) return true;
+          if (l.speaker.isNotEmpty && arabicContains(l.speaker, q)) return true;
+          final cat = categories.where((c) => c.id == l.categoryId);
+          if (cat.isNotEmpty && arabicContains(cat.first.name, q)) return true;
+          final sub = subcategories.where((s) => s.id == l.subcategoryId);
+          if (sub.isNotEmpty && arabicContains(sub.first.name, q)) return true;
+          return false;
+        })
+        .take(80)
+        .toList();
 
     if (q.length >= 2) {
       _debounce?.cancel();

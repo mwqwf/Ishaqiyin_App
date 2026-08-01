@@ -14,19 +14,38 @@ class AppState extends ChangeNotifier {
   String? get autoDownloadTarget => _autoDownloadTarget;
 
   void load() {
-    _themeMode =
-        LocalStore.getThemeMode() == 'dark' ? ThemeMode.dark : ThemeMode.light;
+    _themeMode = _parseThemeMode(LocalStore.getThemeMode());
     _fontScale = LocalStore.getFontScale();
     _autoDownloadEnabled = LocalStore.getAutoDownloadEnabled();
     _autoDownloadTarget = LocalStore.getAutoDownloadTarget();
     notifyListeners();
   }
 
-  Future<void> setDark(bool v) async {
-    _themeMode = v ? ThemeMode.dark : ThemeMode.light;
-    await LocalStore.setThemeMode(v ? 'dark' : 'light');
+  static ThemeMode _parseThemeMode(String v) {
+    switch (v) {
+      case 'dark':
+        return ThemeMode.dark;
+      case 'system':
+        return ThemeMode.system;
+      default:
+        return ThemeMode.light;
+    }
+  }
+
+  /// يضبط وضع السمة بأحد الخيارات الثلاثة: فاتح/داكن/اتّباع النظام.
+  Future<void> setThemeMode(ThemeMode mode) async {
+    _themeMode = mode;
+    final s = mode == ThemeMode.dark
+        ? 'dark'
+        : mode == ThemeMode.system
+            ? 'system'
+            : 'light';
+    await LocalStore.setThemeMode(s);
     notifyListeners();
   }
+
+  Future<void> setDark(bool v) =>
+      setThemeMode(v ? ThemeMode.dark : ThemeMode.light);
 
   Future<void> setFontScale(double v) async {
     _fontScale = v.clamp(0.8, 1.6).toDouble();

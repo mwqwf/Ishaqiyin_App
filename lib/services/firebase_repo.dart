@@ -1,20 +1,26 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:cloud_functions/cloud_functions.dart';
 import '../models.dart';
 import 'local_store.dart';
+import 'anonymous_identity_service.dart';
 
 /// Read-only Firestore access with local cache and incremental sync.
 class FirebaseRepo {
   static final FirebaseFirestore _db = FirebaseFirestore.instance;
+  static final FirebaseFunctions _functions = FirebaseFunctions.instance;
 
-  /// Minimum interval between full re-fetches (30 minutes).
-  static const _syncIntervalMs = 30 * 60 * 1000;
+  /// Minimum interval between background full re-fetches (2 minutes).
+  /// فتح التطبيق والعودة إليه يجلبان دائماً بالقوة (force) لظهور التعديلات
+  /// فوراً؛ هذه الفترة القصيرة مجرد شبكة أمان أثناء التصفّح المستمر.
+  static const _syncIntervalMs = 2 * 60 * 1000;
 
   static Future<List<Category>> fetchCategories({bool force = false}) async {
     if (!force && _cacheFresh()) return LocalStore.getCategories();
     try {
       final snap = await _db.collection('categories').get();
-      final list =
-          snap.docs.map((d) => Category.fromMap(d.id, d.data())).toList();
+      final list = <Category>[
+        for (final d in snap.docs) Category.fromMap(d.id, d.data()),
+      ];
       await LocalStore.setCategories(list);
       return list;
     } catch (_) {
@@ -22,7 +28,8 @@ class FirebaseRepo {
     }
   }
 
-  static Future<List<Subcategory>> fetchSubcategories({bool force = false}) async {
+  static Future<List<Subcategory>> fetchSubcategories(
+      {bool force = false}) async {
     if (!force && _cacheFresh()) return LocalStore.getSubcategories();
     try {
       final snap = await _db.collection('subcategories').get();
@@ -47,14 +54,27 @@ class FirebaseRepo {
     }
     try {
       final snap = await _db.collection('lessons').get();
-      final list =
-          snap.docs.map((d) => Lesson.fromMap(d.id, d.data())).toList();
+      final list = snap.docs
+          .map((d) => Lesson.fromMap(d.id, d.data()))
+          .where(_isPublished)
+          .toList();
       await LocalStore.setLessons(list);
       await LocalStore.setLastSyncMs(DateTime.now().millisecondsSinceEpoch);
       return _mergeLocalDurations(list);
     } catch (_) {
-      return _mergeLocalDurations(LocalStore.getLessons());
+      return _mergeLocalDurations(
+          LocalStore.getLessons().where(_isPublished).toList());
     }
+  }
+
+  /// الدرس منشور إن لم يكن له وقت نشر مجدول في المستقبل.
+  static bool _isPublished(Lesson l) =>
+      l.publishAt == null || !l.publishAt!.isAfter(DateTime.now());
+
+  static List<Lesson> featured(List<Lesson> all, {int limit = 12}) {
+    final list = all.where((l) => l.featured && l.audioUrl.isNotEmpty).toList()
+      ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+    return list.take(limit).toList();
   }
 
   static List<Lesson> _mergeLocalDurations(List<Lesson> lessons) {
@@ -89,18 +109,30 @@ class FirebaseRepo {
     return list;
   }
 
+  /// يرسل التفاعل عبر الخادم بعد التحقق؛ الفشل يُعاد للواجهة بوضوح.
+  static Future<void> sendFeedback(
+      String lessonId, String type, String note) async {
+    await AnonymousIdentityService.ensureSignedIn();
+    await _functions.httpsCallable('sendFeedback').call(<String, dynamic>{
+      'lessonId': lessonId,
+      'type': type,
+      'note': note.trim(),
+    });
+  }
+
   static Future<void> incrementViews(String lessonId) async {
     if (lessonId.isEmpty) return;
     try {
-      await _db
-          .collection('lessons')
-          .doc(lessonId)
-          .set({'views': FieldValue.increment(1)}, SetOptions(merge: true));
-    } catch (_) {}
+      await AnonymousIdentityService.ensureSignedIn();
+      await _functions
+          .httpsCallable('incrementLessonView')
+          .call(<String, dynamic>{'lessonId': lessonId});
+    } catch (e) {
+      // عدّاد الاستماع إحصائي ولا ينبغي أن يوقف الصوت عند انقطاع الشبكة.
+    }
   }
 
-  static bool hasViewData(List<Lesson> all) =>
-      all.any((l) => l.views > 0);
+  static bool hasViewData(List<Lesson> all) => all.any((l) => l.views > 0);
 
   static List<Lesson> mostListened(List<Lesson> all, {int limit = 20}) {
     final list = all.where((l) => l.audioUrl.isNotEmpty).toList();
@@ -121,8 +153,7 @@ class FirebaseRepo {
           l.subcategoryId == lesson.subcategoryId) {
         return 0;
       }
-      if (lesson.categoryId.isNotEmpty &&
-          l.categoryId == lesson.categoryId) {
+      if (lesson.categoryId.isNotEmpty && l.categoryId == lesson.categoryId) {
         return 1;
       }
       return 2;
@@ -197,7 +228,8 @@ class FirebaseRepo {
       final subLessons = lessonsForSubcategory(entry.key, all);
       for (final l in subLessons) {
         if (completed.contains(l.id)) continue;
-        if ((positions[l.id] ?? 0) > 0 || subVisits.containsKey(l.subcategoryId)) {
+        if ((positions[l.id] ?? 0) > 0 ||
+            subVisits.containsKey(l.subcategoryId)) {
           res.add(l);
           if (res.length >= limit) return res;
         }
@@ -219,6 +251,94 @@ class FirebaseRepo {
     final ids = LocalStore.getFavoriteIds().toSet();
     final byId = {for (final l in all) l.id: l};
     return ids.map((id) => byId[id]).whereType<Lesson>().toList();
+  }
+
+  // ---------------- السلاسل (تقدّم القسم الفرعي) ----------------
+  /// (عدد المكتمل، الإجمالي) لدروس قسم فرعي معيّن.
+  static (int, int) seriesProgress(String subId, List<Lesson> all) {
+    final lessons =
+        all.where((l) => l.subcategoryId == subId && l.audioUrl.isNotEmpty);
+    final total = lessons.length;
+    if (total == 0) return (0, 0);
+    final completed = LocalStore.getCompletedIds().toSet();
+    final done = lessons.where((l) => completed.contains(l.id)).length;
+    return (done, total);
+  }
+
+  // ---------------- محطات «إذاعة منبر» ----------------
+  static int _durMs(Lesson l) =>
+      l.durationMs > 0 ? l.durationMs : LocalStore.getDurationMs(l.id);
+
+  /// المحطة المخصّصة: طابور طويل من التوصيات + الأحدث (لبثّ لا يتوقف).
+  static List<Lesson> stationForYou(List<Lesson> all) {
+    final feed = recommendedFeed(all, limit: 200);
+    if (feed.isNotEmpty) return feed;
+    final withAudio = all.where((l) => l.audioUrl.isNotEmpty).toList()
+      ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+    return withAudio;
+  }
+
+  static List<Lesson> stationNewest(List<Lesson> all) {
+    final l = all.where((x) => x.audioUrl.isNotEmpty).toList()
+      ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+    return l;
+  }
+
+  /// المحطة القصيرة: دروس مدّتها المعروفة أقل من 10 دقائق.
+  static List<Lesson> stationShort(List<Lesson> all) {
+    final l = all.where((x) => x.audioUrl.isNotEmpty).where((x) {
+      final d = _durMs(x);
+      return d > 0 && d < 10 * 60 * 1000;
+    }).toList()
+      ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+    return l;
+  }
+
+  static List<Lesson> stationRandom(List<Lesson> all) {
+    final l = all.where((x) => x.audioUrl.isNotEmpty).toList()..shuffle();
+    return l;
+  }
+
+  /// درس «الوِرد اليومي»: اختيار حتمي ثابت لكل يوم من كل الدروس.
+  static Lesson? dailyWard(List<Lesson> all) {
+    final withAudio = all.where((l) => l.audioUrl.isNotEmpty).toList()
+      ..sort((a, b) => a.id.compareTo(b.id));
+    if (withAudio.isEmpty) return null;
+    final now = DateTime.now();
+    final seed = now.year * 1000 + now.month * 40 + now.day;
+    return withAudio[seed % withAudio.length];
+  }
+
+  // ---------------- «الأكثر استماعاً هذا الأسبوع» (تقريبي) ----------------
+  /// يمزج عدّاد المشاهدات مع حداثة الإضافة لإبراز الرائج مؤخّراً.
+  static List<Lesson> trendingThisWeek(List<Lesson> all, {int limit = 15}) {
+    final pool =
+        all.where((l) => l.audioUrl.isNotEmpty && l.views > 0).toList();
+    if (pool.isEmpty) return [];
+    final now = DateTime.now();
+    double score(Lesson l) {
+      final ageDays = now.difference(l.createdAt).inDays.clamp(0, 3650);
+      final recency = 1.0 / (1 + ageDays / 30.0); // يتلاشى خلال أسابيع
+      return l.views * (0.5 + recency);
+    }
+
+    pool.sort((a, b) => score(b).compareTo(score(a)));
+    return pool.take(limit).toList();
+  }
+
+  // ---------------- قوائم ذكية تلقائية ----------------
+  /// دروس بدأها المستخدم ولم يكملها.
+  static List<Lesson> unfinished(List<Lesson> all) {
+    final positions = LocalStore.getPositions();
+    final completed = LocalStore.getCompletedIds().toSet();
+    final byId = {for (final l in all) l.id: l};
+    final res = <Lesson>[];
+    positions.forEach((id, pos) {
+      if (pos > 3000 && !completed.contains(id) && byId.containsKey(id)) {
+        res.add(byId[id]!);
+      }
+    });
+    return res;
   }
 
   static Future<void> syncAll({bool force = false}) async {

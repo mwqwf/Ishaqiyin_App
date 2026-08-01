@@ -21,18 +21,25 @@ class _DownloadsScreenState extends State<DownloadsScreen> {
   void initState() {
     super.initState();
     _load();
+    ContentRepository.instance.addListener(_load);
+    LocalStore.libraryRevision.addListener(_load);
   }
 
   void _load() {
     final repo = ContentRepository.instance;
     final downloads = DownloadService.allDownloads();
     final byId = {for (final l in repo.lessons) l.id: l};
+    if (!mounted) return;
     setState(() {
-      _items = downloads
-          .map((e) => byId[e.key])
-          .whereType<Lesson>()
-          .toList();
+      _items = downloads.map((e) => byId[e.key]).whereType<Lesson>().toList();
     });
+  }
+
+  @override
+  void dispose() {
+    ContentRepository.instance.removeListener(_load);
+    LocalStore.libraryRevision.removeListener(_load);
+    super.dispose();
   }
 
   Future<void> _delete(Lesson l) async {
@@ -42,8 +49,12 @@ class _DownloadsScreenState extends State<DownloadsScreen> {
         title: const Text('حذف التنزيل'),
         content: Text('حذف "${lessonDisplayTitle(l)}" من جهازك؟'),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('إلغاء')),
-          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('حذف')),
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('إلغاء')),
+          FilledButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('حذف')),
         ],
       ),
     );
@@ -74,7 +85,8 @@ class _DownloadsScreenState extends State<DownloadsScreen> {
                 final l = _items[i];
                 final dur = LocalStore.getDurationMs(l.id);
                 return Card(
-                  margin: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+                  margin:
+                      const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
                   child: ListTile(
                     leading: const CircleAvatar(
                       backgroundColor: kGreen,
@@ -92,7 +104,8 @@ class _DownloadsScreenState extends State<DownloadsScreen> {
                     onTap: () => Navigator.push(
                       context,
                       MaterialPageRoute(
-                        builder: (_) => PlayerScreen(lesson: l, playlist: _items),
+                        builder: (_) =>
+                            PlayerScreen(lesson: l, playlist: _items),
                       ),
                     ),
                   ),
